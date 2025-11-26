@@ -16,16 +16,13 @@ heapless = { version = "0.9.1", features = ["defmt", "portable-atomic"] }
 panic-probe = { version = "1.0.0", features = ["defmt", "print-defmt"] }
 #edf-sw = { path = "../../../edf-sw" }
 rtic-edf-pass = { path = "../../compilation_passes/rtic-edf-pass", default-features = false }
-atsamd-hal = { version = "0.22.2", default-features = false }
+atsamd-hal = { version = "0.23.0", default-features = false }
 rtic-macro = { path = "rtic-macro" }
 
 
 [features]
 # ask the HAL to enable atsamd51j support
 default = ["atsamd-hal/samd51j-rt", "atsamd-hal/samd51j", "atsamd-hal/defmt"]
-
-[build-dependencies]
-cc = "1.2.44"
 
 [profile.dev]
 opt-level = 0

@@ -34,13 +34,13 @@ impl CorePassBackend for AtsamdEdfRtic {
         let initialize_dispatcher_interrupts =
             app_analysis.used_irqs.iter().map(|(irq_name, priority)| {
                 quote! {
-                    self::assert!(0 < #priority && #priority <= 1 << NVIC_PRIO_BITS, "priority level not supported");
+                    assert!(0 < #priority && #priority <= 1 << NVIC_PRIO_BITS, "priority level not supported");
                     //set interrupt priority
                     #peripheral_crate::CorePeripherals::steal()
                         .NVIC
                         .set_priority(
                             #peripheral_crate::Interrupt::#irq_name,
-                            rtic::export::cortex_logical2hw(#priority as u8, NVIC_PRIO_BITS)
+                            ::cortex_m_edf_rtic::export::cortex_logical2hw(#priority as u8, NVIC_PRIO_BITS)
                         );
                     //unmask interrupt
                     #peripheral_crate::NVIC::unmask(#peripheral_crate::Interrupt::#irq_name);
@@ -110,7 +110,7 @@ impl CorePassBackend for AtsamdEdfRtic {
     ) -> syn::ImplItemFn {
         let lock_impl: syn::Block = parse_quote! {
             {
-                unsafe { rtic::export::lock(resource_ptr, CEILING as u8, NVIC_PRIO_BITS, f); }
+                unsafe { ::cortex_m_edf_rtic::export::lock(resource_ptr, CEILING as u8, NVIC_PRIO_BITS, f); }
             }
         };
 
@@ -133,7 +133,7 @@ impl CorePassBackend for AtsamdEdfRtic {
         dispatch_task_call: TokenStream2,
     ) -> Option<TokenStream2> {
         Some(quote! {
-            rtic::export::run(#task_prio as u8, || {#dispatch_task_call});
+            ::cortex_m_edf_rtic::export::run(#task_prio as u8, || {#dispatch_task_call});
         })
     }
     fn pre_codegen_validation(

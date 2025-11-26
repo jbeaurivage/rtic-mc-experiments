@@ -1,8 +1,7 @@
-use crate::edf_pass::parse::ast::AppParameters;
+use crate::{EdfPass, edf_pass::parse::ast::AppParameters};
 
-use super::parse::ast::RticTask;
+use super::parse::ast::EdfTask;
 use proc_macro2::Ident;
-use quote::{quote, ToTokens};
 use rtic_core::parse_utils::RticAttr;
 use syn::{Item, ItemMod, ItemStruct, Visibility};
 
@@ -13,7 +12,7 @@ pub struct App {
     pub mod_visibility: Visibility,
     pub mod_ident: Ident,
     pub app_parameters: AppParameters,
-    pub tasks: Vec<RticTask>,
+    pub tasks: Vec<EdfTask>,
     pub rest_of_code: Vec<Item>,
 }
 
@@ -43,7 +42,7 @@ impl App {
         //rest_of_code.push(quote!(hello));
         let tasks = task_structs
             .into_iter()
-            .map(RticTask::from_struct)
+            .map(EdfTask::from_struct)
             .collect::<syn::Result<_>>()?;
 
         Ok(Self {
@@ -53,6 +52,37 @@ impl App {
             tasks,
             rest_of_code,
         })
+    }
+
+    pub(super) fn convert_deadlines_to_priorities(&mut self, edf_pass: &EdfPass) {
+        let mut deadlines: Vec<_> = self.tasks.iter().map(|t| t.deadline_us).collect();
+
+        deadlines.sort();
+        deadlines.dedup();
+        // TODO: should this be reversed? What is the priority ordering considered by RTIC?
+        // deadlines.reverse();
+
+        if deadlines.len() as u16 > edf_pass.max_priority {
+            panic!(
+                "Exceeded number of priorities for this platform ({}), please coerce deadlines manually.",
+                edf_pass.max_priority
+            );
+        }
+
+        // Transform deadlines into priorities that will be passed as hardware tasks
+        for t in self.tasks.iter_mut() {
+            let pos = deadlines.iter().position(|d| *d == t.deadline_us).unwrap();
+            t.priority = Some(pos as u32 + 1);
+        }
+    }
+
+    pub(super) fn scheduler_priority(&self) -> u32 {
+        self.tasks
+            .iter()
+            .flat_map(|t| t.priority)
+            .max()
+            .map(|p| p + 1)
+            .expect("Scheduler should have a priority assigned")
     }
 }
 

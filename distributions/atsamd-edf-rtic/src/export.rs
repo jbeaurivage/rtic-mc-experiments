@@ -9,9 +9,11 @@ pub use cortex_m::{
     interrupt,
     peripheral::{DWT, NVIC, SCB, SYST, scb::SystemHandler},
 };
-use rtic_edf_pass::critical_section::CsImpl;
+use rtic_edf_pass::critical_section::DroppableCriticalSection;
+
 /// Distribution crate must re-export the `export` module from all the used compilation passes
-//pub use rtic_edf_pass::export::*;
+#[allow(unused_imports)]
+pub use rtic_edf_pass::export::*;
 
 #[inline]
 #[must_use]
@@ -79,13 +81,15 @@ pub unsafe fn lock<T, R>(
     f: impl FnOnce(&mut T) -> R,
 ) -> R {
     if ceiling == (1 << nvic_prio_bits) {
-        cortex_m::interrupt::free(|_| f(&mut *ptr))
+        cortex_m::interrupt::free(|_| unsafe { f(&mut *ptr) })
     } else {
         let current = basepri::read();
         basepri_max::write(cortex_logical2hw(ceiling, nvic_prio_bits));
-        let r = f(&mut *ptr);
-        basepri::write(current);
-        r
+        unsafe {
+            let r = f(&mut *ptr);
+            basepri::write(current);
+            r
+        }
     }
 }
 
@@ -93,15 +97,19 @@ pub struct CsGuard {
     primask: Primask,
 }
 
-impl rtic_edf_pass::critical_section::CsImpl for CsGuard {
-    fn take() -> Self {
+impl rtic_edf_pass::critical_section::DroppableCriticalSection for CsGuard {
+    fn enter() -> Self {
         let primask = cortex_m::register::primask::read();
         interrupt::disable();
 
         Self { primask }
     }
 
-    unsafe fn restore_inner(&mut self) {
+    fn forget(self) {
+        core::mem::forget(self);
+    }
+
+    fn restore(&mut self) {
         if self.primask.is_active() {
             unsafe {
                 interrupt::enable();
@@ -112,8 +120,6 @@ impl rtic_edf_pass::critical_section::CsImpl for CsGuard {
 
 impl Drop for CsGuard {
     fn drop(&mut self) {
-        unsafe {
-            self.restore_inner();
-        }
+        self.restore();
     }
 }

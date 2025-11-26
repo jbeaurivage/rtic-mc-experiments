@@ -1,5 +1,5 @@
 [build]
-target = "thumbv7m-none-eabi"
+target = "thumbv7em-none-eabihf"
 
 [target.thumbv7m-none-eabi]
 runner = "gdb-multiarch -q -x openocd.gdb"
