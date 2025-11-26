@@ -73,14 +73,14 @@ impl CodeGen {
 
         parse_quote! {
             const EDF_QUEUE_LEN: usize = #queue_len;
-            const NUM_DISPATCHERS: usize = #num_dispatchers;
-            const DISPATCHERS: [#pac_path::Interrupt; NUM_DISPATCHERS] = [
+            const NUM_EDF_DISPATCHERS: usize = #num_dispatchers;
+            const EDF_DISPATCHERS: [#pac_path::Interrupt; NUM_EDF_DISPATCHERS] = [
                 #(#pac_path::Interrupt::#dispatchers,)*
             ];
 
             use ::rtic_edf_pass::scheduler::Scheduler;
             pub struct NvicScheduler {
-                running_stack: ::rtic_edf_pass::scheduler::TaskStack<NUM_DISPATCHERS>,
+                running_stack: ::rtic_edf_pass::scheduler::TaskStack<NUM_EDF_DISPATCHERS>,
                 min_deadline: ::rtic_edf_pass::scheduler::MinDeadline,
                 task_queue: ::rtic_edf_pass::scheduler::TaskQueue<EDF_QUEUE_LEN>,
             }
@@ -96,7 +96,7 @@ impl CodeGen {
             }
 
             // TODO: cortex-m is leaking here
-            impl ::rtic_edf_pass::scheduler::Scheduler<NUM_DISPATCHERS, EDF_QUEUE_LEN> for NvicScheduler {
+            impl ::rtic_edf_pass::scheduler::Scheduler<NUM_EDF_DISPATCHERS, EDF_QUEUE_LEN> for NvicScheduler {
                 type CS = ::cortex_m_edf_rtic::export::CsGuard;
 
                 #[inline]
@@ -105,7 +105,7 @@ impl CodeGen {
                 }
 
                 #[inline]
-                fn running_stack(&self) -> &::rtic_edf_pass::scheduler::TaskStack<NUM_DISPATCHERS> {
+                fn running_stack(&self) -> &::rtic_edf_pass::scheduler::TaskStack<NUM_EDF_DISPATCHERS> {
                     &self.running_stack
                 }
 
@@ -121,7 +121,7 @@ impl CodeGen {
 
                 #[inline]
                 fn pend_priority(prio: u16) {
-                    ::cortex_m::peripheral::NVIC::pend(DISPATCHERS[prio as usize]);
+                    ::cortex_m::peripheral::NVIC::pend(EDF_DISPATCHERS[prio as usize]);
                 }
             }
 

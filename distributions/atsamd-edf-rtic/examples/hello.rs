@@ -11,11 +11,13 @@
 mod app {
 
     #[shared]
-    struct Shared {}
+    struct Shared {
+        x: u32,
+    }
 
     #[init]
     fn system_init() -> Shared {
-        Shared {}
+        Shared { x: 0 }
     }
 
     #[idle]
@@ -34,7 +36,7 @@ mod app {
         }
     }
 
-    #[task(deadline_us = 32, binds = SERCOM1_1)]
+    #[task(deadline_us = 32, binds = SERCOM1_1, shared = [x])]
     pub struct Task1 {}
 
     impl RticTask for Task1 {
@@ -43,11 +45,14 @@ mod app {
         }
 
         fn exec(&mut self) {
+            self.shared().x.lock(|x| {
+                *x += 1;
+            });
             cortex_m::asm::nop();
         }
     }
 
-    #[task(deadline_us = 64, binds = AC)]
+    #[task(deadline_us = 64, binds = AC, shared = [x])]
     pub struct Task2 {}
 
     impl RticTask for Task2 {
@@ -56,6 +61,9 @@ mod app {
         }
 
         fn exec(&mut self) {
+            self.shared().x.lock(|x| {
+                *x += 1;
+            });
             cortex_m::asm::nop();
         }
     }

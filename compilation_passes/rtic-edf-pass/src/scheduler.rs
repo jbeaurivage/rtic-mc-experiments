@@ -7,7 +7,7 @@ use crate::{
     util::Timestamp,
 };
 
-pub struct TaskStack<const N: usize>(UnsafeCell<Vec<RunningTask, N>>);
+pub struct TaskStack<const N: usize>(UnsafeCell<Vec<RunningTask<'static>, N>>);
 
 impl<const N: usize> TaskStack<N> {
     #[expect(clippy::new_without_default)]
@@ -15,7 +15,7 @@ impl<const N: usize> TaskStack<N> {
         Self(UnsafeCell::new(Vec::new()))
     }
 
-    fn get_mut<CS: DroppableCriticalSection>(&self, _cs: &CS) -> *mut Vec<RunningTask, N> {
+    fn get_mut<CS: DroppableCriticalSection>(&self, _cs: &CS) -> *mut Vec<RunningTask<'static>, N> {
         self.0.get()
     }
 }
@@ -37,7 +37,7 @@ impl MinDeadline {
 
 unsafe impl Sync for MinDeadline {}
 
-pub struct TaskQueue<const N: usize>(UnsafeCell<BinaryHeap<ScheduledTask, Min, N>>);
+pub struct TaskQueue<const N: usize>(UnsafeCell<BinaryHeap<ScheduledTask<'static>, Min, N>>);
 
 unsafe impl<const N: usize> Sync for TaskQueue<N> {}
 
@@ -50,7 +50,7 @@ impl<const N: usize> TaskQueue<N> {
     fn get_mut<CS: DroppableCriticalSection>(
         &self,
         _cs: &CS,
-    ) -> *mut BinaryHeap<ScheduledTask, Min, N> {
+    ) -> *mut BinaryHeap<ScheduledTask<'static>, Min, N> {
         self.0.get()
     }
 }
@@ -64,10 +64,7 @@ pub trait Scheduler<const S: usize, const Q: usize> {
     fn min_deadline(&self) -> &MinDeadline;
     fn running_stack(&self) -> &TaskStack<S>;
 
-    fn schedule(&self, task: Task) {
-        // TODO
-        // self.check_init();
-
+    fn schedule(&self, task: Task<'static>) {
         let cs = Self::CS::enter();
         let now = Self::now();
 
@@ -85,12 +82,14 @@ pub trait Scheduler<const S: usize, const Q: usize> {
             {
                 let queue = unsafe { &mut *self.task_queue().get_mut(&cs) };
 
-                queue.push(task).unwrap();
+                queue
+                    .push(task)
+                    .unwrap_or_else(|_| panic!("EDF task queue is full"));
             }
         }
     }
 
-    fn execute(&self, cs: Self::CS, task: ScheduledTask) {
+    fn execute(&self, cs: Self::CS, task: ScheduledTask<'static>) {
         let dl_ref = unsafe { &mut *self.min_deadline().get_mut(&cs) };
         let prev_dl = *dl_ref;
         *dl_ref = task.abs_deadline();
@@ -100,7 +99,7 @@ pub trait Scheduler<const S: usize, const Q: usize> {
 
         stack
             .push(crate::task::RunningTask::from_scheduled(task, prev_dl))
-            .unwrap();
+            .unwrap_or_else(|_| panic!("BUG: EDF running task stack is fill"));
         // let max_prio = stack.len() as u8;
 
         Self::pend_priority(dispatcher_prio);
@@ -108,14 +107,21 @@ pub trait Scheduler<const S: usize, const Q: usize> {
 
     #[inline]
     fn trampoline(&self) {
-        let (callback, prev_deadline) = unsafe {
+        let (task_to_run, prev_deadline) = unsafe {
             let cs = Self::CS::enter();
-            let task = (&*self.running_stack().get_mut(&cs)).last().unwrap();
-            (task.callback(), task.prev_deadline())
+            let task = (&mut *self.running_stack().get_mut(&cs))
+                .last_mut()
+                .unwrap();
+            let prev_dl = task.prev_deadline();
+            (task.task_to_run(), prev_dl)
         };
 
         // Finally call the actual task
-        callback();
+
+        // TODO: SAFETY: dunno if it's actually unsound to hold onto the task to run
+        // until here, since we mutably borrow it inside the critical section that
+        // exits while we still hold the task
+        task_to_run.run();
 
         // And cleanup after ourselves
         let cs = Self::CS::enter();

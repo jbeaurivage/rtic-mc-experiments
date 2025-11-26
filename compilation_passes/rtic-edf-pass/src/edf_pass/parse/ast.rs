@@ -1,4 +1,5 @@
-use proc_macro2::TokenStream;
+use heck::ToSnakeCase;
+use proc_macro2::{Span, TokenStream};
 use quote::format_ident;
 use rtic_core::parse_utils::RticAttr;
 use syn::{Expr, ItemStruct, Lit, Path, parse_quote};
@@ -104,6 +105,16 @@ impl EdfTask {
         let binds = &self.binds;
         let task_ident = &self.task_struct.ident;
 
+        let static_ident = syn::Ident::new(
+            &self
+                .task_struct
+                .ident
+                .to_string()
+                .to_snake_case()
+                .to_uppercase(),
+            Span::call_site(),
+        );
+
         let mut dispatcher_prio: u16 = self
             .priority
             .expect("BUG: task should have an assigned priority by now")
@@ -128,9 +139,17 @@ impl EdfTask {
                 }
 
                 fn exec(&mut self) {
-                    SCHEDULER.schedule(
-                        ::rtic_edf_pass::task::Task::new(#deadline_us, #dispatcher_prio, #task_ident::exec),
-                    );
+                    unsafe{
+                        SCHEDULER.schedule(
+                            ::rtic_edf_pass::task::Task::new(#deadline_us, #dispatcher_prio, #static_ident.assume_init_mut()),
+                        );
+                    }
+                }
+            }
+
+            impl ::rtic_edf_pass::task::Runnable for #task_ident {
+                fn run(&mut self) {
+                    self.exec();
                 }
            }
         }
