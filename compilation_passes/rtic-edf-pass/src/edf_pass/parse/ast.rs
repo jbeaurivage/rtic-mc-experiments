@@ -103,6 +103,17 @@ impl EdfTask {
     pub fn generate_signal_binding(&self, priority: u32) -> TokenStream {
         let binds = &self.binds;
         let task_ident = &self.task_struct.ident;
+
+        let mut dispatcher_prio: u16 = self
+            .priority
+            .expect("BUG: task should have an assigned priority by now")
+            .try_into()
+            .expect("Unsupported priority level");
+        // The dispatcher priorities naturally start at 1 and up (since 0 is the idle task).
+        // Renormalize the priority in the scheduler such that it is 0-indexed when indexing
+        // the dispatcher array (see Scheduler::pend_priority).
+        dispatcher_prio -= 1;
+
         let sched_task_ident = format_ident!("__signal_scheduler_{}", self.task_struct.ident);
         let deadline_us = self.deadline_us;
 
@@ -117,11 +128,8 @@ impl EdfTask {
                 }
 
                 fn exec(&mut self) {
-                    Scheduler::schedule(
-                        &RUNNING_STACK,
-                        &TASK_QUEUE,
-                        &MIN_DEADLINE,
-                        ::rtic_edf_pass::task::Task::new(#deadline_us, #task_ident::exec),
+                    SCHEDULER.schedule(
+                        ::rtic_edf_pass::task::Task::new(#deadline_us, #dispatcher_prio, #task_ident::exec),
                     );
                 }
            }

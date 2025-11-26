@@ -3,13 +3,15 @@ use crate::util::{Deadline, Timestamp};
 #[derive(Debug)]
 pub struct Task {
     rel_deadline: Deadline,
+    dispatcher_prio: u16,
     callback: fn(),
 }
 
 impl Task {
-    pub fn new(rel_deadline: Deadline, callback: fn()) -> Self {
+    pub fn new(rel_deadline: Deadline, dispatcher_prio: u16, callback: fn()) -> Self {
         Self {
             rel_deadline,
+            dispatcher_prio,
             callback,
         }
     }
@@ -25,6 +27,7 @@ impl Task {
     pub fn into_queued(self, now: Timestamp) -> ScheduledTask {
         ScheduledTask {
             deadline: now.wrapping_add(self.rel_deadline),
+            dispatcher_prio: self.dispatcher_prio,
             callback: self.callback,
         }
     }
@@ -34,12 +37,17 @@ impl Task {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ScheduledTask {
     deadline: Timestamp,
+    dispatcher_prio: u16,
     callback: fn(),
 }
 
 impl ScheduledTask {
     pub fn abs_deadline(&self) -> Timestamp {
         self.deadline
+    }
+
+    pub fn dispatcher_prio(&self) -> u16 {
+        self.dispatcher_prio
     }
 }
 

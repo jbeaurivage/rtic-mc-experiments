@@ -1,5 +1,5 @@
 use core::cell::UnsafeCell;
-use heapless::{binary_heap::Min, BinaryHeap, Vec};
+use heapless::{BinaryHeap, Vec, binary_heap::Min};
 
 use crate::{
     critical_section::DroppableCriticalSection,
@@ -55,18 +55,16 @@ impl<const N: usize> TaskQueue<N> {
     }
 }
 
-pub trait Scheduler {
+pub trait Scheduler<const S: usize, const Q: usize> {
     type CS: DroppableCriticalSection;
-    // fn init();
     fn now() -> Timestamp;
-    fn pend_priority(prio: u8);
+    fn pend_priority(prio: u16);
 
-    fn schedule<const S: usize, const Q: usize>(
-        task_stack: &TaskStack<S>,
-        queue: &TaskQueue<Q>,
-        min_dl: &MinDeadline,
-        task: Task,
-    ) {
+    fn task_queue(&self) -> &TaskQueue<Q>;
+    fn min_deadline(&self) -> &MinDeadline;
+    fn running_stack(&self) -> &TaskStack<S>;
+
+    fn schedule(&self, task: Task) {
         // TODO
         // self.check_init();
 
@@ -74,83 +72,73 @@ pub trait Scheduler {
         let now = Self::now();
 
         let task = task.into_queued(now);
-        let (stack, dl_ref) = unsafe { (&mut *task_stack.get_mut(&cs), *min_dl.get_mut(&cs)) };
+        let (stack, dl_ref) = unsafe {
+            (
+                &mut *self.running_stack().get_mut(&cs),
+                *self.min_deadline().get_mut(&cs),
+            )
+        };
 
         if task.abs_deadline() < dl_ref || stack.is_empty() {
-            Self::execute(cs, task_stack, min_dl, task);
+            self.execute(cs, task);
         } else {
             {
-                let queue = unsafe { &mut *queue.get_mut(&cs) };
+                let queue = unsafe { &mut *self.task_queue().get_mut(&cs) };
 
                 queue.push(task).unwrap();
             }
         }
     }
 
-    fn execute<const S: usize>(
-        cs: Self::CS,
-        task_stack: &TaskStack<S>,
-        min_dl: &MinDeadline,
-        task: ScheduledTask,
-    ) {
-        let dl_ref = unsafe { &mut *min_dl.get_mut(&cs) };
+    fn execute(&self, cs: Self::CS, task: ScheduledTask) {
+        let dl_ref = unsafe { &mut *self.min_deadline().get_mut(&cs) };
         let prev_dl = *dl_ref;
         *dl_ref = task.abs_deadline();
 
-        let stack = unsafe { &mut *task_stack.get_mut(&cs) };
+        let stack = unsafe { &mut *self.running_stack().get_mut(&cs) };
+        let dispatcher_prio = task.dispatcher_prio();
 
         stack
             .push(crate::task::RunningTask::from_scheduled(task, prev_dl))
             .unwrap();
-        let max_prio = stack.len() as u8;
+        // let max_prio = stack.len() as u8;
 
-        Self::pend_priority(max_prio);
+        Self::pend_priority(dispatcher_prio);
+    }
+
+    #[inline]
+    fn trampoline(&self) {
+        let (callback, prev_deadline) = unsafe {
+            let cs = Self::CS::enter();
+            let task = (&*self.running_stack().get_mut(&cs)).last().unwrap();
+            (task.callback(), task.prev_deadline())
+        };
+
+        // Finally call the actual task
+        callback();
+
+        // And cleanup after ourselves
+        let cs = Self::CS::enter();
+        let (stack, min_dl) = unsafe {
+            (
+                &mut *self.running_stack().get_mut(&cs),
+                &mut *self.min_deadline().get_mut(&cs),
+            )
+        };
+
+        stack.pop().unwrap();
+        // Restore previous deadline
+        *min_dl = prev_deadline;
+
+        // It's possible that a task showed up in the queue as the previous task was
+        // running. So we need to check if it would preempt the next task in line to
+        // run, which would start as soon as the critical section exits.
+        let queue = unsafe { &mut *self.task_queue().get_mut(&cs) };
+        if let Some(task) = queue.peek()
+            && (task.abs_deadline() < *min_dl || stack.is_empty())
+        {
+            let task = unsafe { queue.pop_unchecked() };
+            self.execute(cs, task);
+        }
     }
 }
-
-// pub struct Scheduler<CS>
-// where
-//     CS: CsImpl,
-// {
-//     ready: AtomicBool,
-//     _cs: PhantomData<CS>,
-// }
-
-// impl<CS> Scheduler<CS>
-// where
-//     CS: CsImpl,
-// {
-//     pub const fn new() -> Self {
-//         Self {
-//             ready: AtomicBool::new(false),
-//             _cs: PhantomData,
-//         }
-//     }
-
-//     pub fn check_init(&self) {
-//         if !self.ready.load(Ordering::SeqCst) {
-//             panic!("Scheduler not initialized");
-//         }
-//     }
-
-//     // TODO: should be in codegen
-//     pub fn init(&self, nvic: &mut NVIC, scb: &mut SCB) {
-//         let cs = CS::take();
-//         // interrupt::disable();
-
-//         for (level, interrupt) in DISPATCHERS.iter().enumerate() {
-//             // TODO remove this "8" magic number somehow, which is the number of priorities
-//             // available on the ATSAMD51J
-//             let nvic_prio = (8 - (level as u8 + 1)) << 4;
-
-//             unsafe {
-//                 NVIC::unpend(*interrupt);
-//                 NVIC::unmask(*interrupt);
-//                 nvic.set_priority(*interrupt, nvic_prio);
-//             }
-//         }
-
-//         self.ready.swap(true, Ordering::SeqCst);
-//         // interrupt::enable();
-//     }
-// }
