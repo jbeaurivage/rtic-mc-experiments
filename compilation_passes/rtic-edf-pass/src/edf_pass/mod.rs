@@ -28,18 +28,15 @@ impl RticPass for EdfPass {
     fn run_pass(&self, args: TokenStream, app_mod: ItemMod) -> syn::Result<(TokenStream, ItemMod)> {
         let params = RticAttr::parse_from_tokens(args.clone())?;
 
-        let mut parsed = App::parse(&params, app_mod)?;
+        let mut parsed = App::parse(self, &params, app_mod)?;
 
         self.analyze(&mut parsed);
 
         for task in parsed.tasks.iter_mut() {
-            if let Some(deadline) = task.priority {
-                task.params.elements.remove("deadline");
-                let expr: syn::Expr = parse_quote! { #deadline };
-                let _ = task.params.elements.insert("priority".into(), expr);
-            } else {
-                continue;
-            }
+            let priority = task.priority;
+            task.params.elements.remove("deadline");
+            let expr: syn::Expr = parse_quote! { #priority };
+            let _ = task.params.elements.insert("priority".into(), expr);
         }
 
         let code = CodeGen::new(parsed).run();
@@ -53,6 +50,19 @@ impl RticPass for EdfPass {
 
 impl EdfPass {
     fn analyze(&self, app: &mut App) {
-        app.convert_deadlines_to_priorities(self);
+        if app.tasks.len() as u16 > self.max_priority {
+            panic!(
+                "Exceeded number of priorities for this platform ({}), please coerce deadlines manually.",
+                self.max_priority
+            );
+        }
+
+        if app.app_parameters.dispatchers.len() != app.tasks.len() {
+            panic!(
+                "The EDF scheduler needs exactly as many dispatchers as there are tasks ({} tasks, {} dispatchers).",
+                app.tasks.len(),
+                app.app_parameters.dispatchers.len()
+            )
+        }
     }
 }

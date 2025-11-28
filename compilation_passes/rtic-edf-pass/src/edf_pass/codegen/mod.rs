@@ -1,6 +1,9 @@
+use crate::edf_pass::parse::EdfTask;
+
 use super::parse::App;
 
-use proc_macro2::TokenStream;
+use heck::ToSnakeCase;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{ItemMod, parse_quote};
 
@@ -60,13 +63,19 @@ impl CodeGen {
     }
 
     fn generate_scheduler_impl(&self) -> TokenStream {
-        let dispatchers = self
+        let dispatchers: Vec<_> = self
             .app
-            .app_parameters
-            .dispatchers
+            .tasks
             .iter()
-            .map(|d| d.get_ident())
-            .collect::<Vec<_>>();
+            .enumerate()
+            .map(|(i, task)| {
+                assert_eq!(
+                    i, task.dispatcher_idx,
+                    "RTIC codegen bug: Tasks vector is not sequentially sorted."
+                );
+                task.dispatcher.get_ident()
+            })
+            .collect();
 
         let num_dispatchers = dispatchers.len();
         let queue_len = self.app.app_parameters.queue_len;
@@ -131,40 +140,27 @@ impl CodeGen {
     }
 
     fn generate_task_signal_bindings(&self) -> Vec<TokenStream> {
-        let scheduler_priority = self.app.scheduler_priority();
+        let scheduler_priority = self.app.timestamper_priority();
 
         self.app
             .tasks
             .iter()
-            .map(|t| t.generate_signal_binding(scheduler_priority))
+            .map(|t| t.generate_timestamper_binding(scheduler_priority))
             .collect()
     }
 
     fn generate_dispatcher_bindings(&self) -> Vec<TokenStream> {
-        // TODO: here we're relying on the fact that the vec is ordered to get
-        // the right task/dispatcher combo.
-        //
-        // Might be better to use a hashmap instead
-        let dispatchers = self
-            .app
-            .tasks
-            .iter()
-            .zip(self.app.app_parameters.dispatchers.iter())
-            .enumerate();
-
         let mut tokens = vec![];
 
-        for (dispatcher_idx, (task, dispatcher)) in dispatchers {
-            let logical_prio = task
-                .priority
-                .expect("Task needs an assigned dispatcher prioriry");
-
-            eprintln!("dispatcher priority: {logical_prio}");
+        for task in self.app.tasks.iter() {
+            let dispatcher_prio = task.priority;
+            let dispatcher_binding = &task.dispatcher;
+            let dispatcher_idx = task.dispatcher_idx;
 
             let dispatcher_ident = format_ident!("EdfDispatcher{dispatcher_idx}");
             tokens.push(parse_quote! {
 
-                #[task(priority = #logical_prio, binds = #dispatcher)]
+                #[task(priority = #dispatcher_prio, binds = #dispatcher_binding)]
                 struct #dispatcher_ident {}
 
                 impl RticTask for #dispatcher_ident {
@@ -183,7 +179,77 @@ impl CodeGen {
     }
 }
 
-// For every EDF task, we need to:
-//
-// * Assign it to some dispatcher trampoline (can this be a software task?)
-// * Generate the signalling IRQ (ie, calls the scheduler op)
+impl EdfTask {
+    pub fn generate_timestamper_binding(&self, priority: u16) -> TokenStream {
+        let binds = &self.binds;
+        let task_ident = &self.task_struct.ident;
+
+        let static_ident = syn::Ident::new(
+            &self
+                .task_struct
+                .ident
+                .to_string()
+                .to_snake_case()
+                .to_uppercase(),
+            Span::call_site(),
+        );
+
+        let dispatcher_idx: u16 = self
+            .dispatcher_idx
+            .try_into()
+            .expect("Unsupported dispatcher index");
+
+        let sched_task_ident = format_ident!("__signal_scheduler_{}", self.task_struct.ident);
+        let deadline_us = self.deadline_us;
+
+        eprintln!(
+            "timestamper: priority {priority}, irq: {}",
+            binds.get_ident().unwrap()
+        );
+
+        parse_quote! {
+            #[task(priority = #priority, binds = #binds)]
+            #[allow(non_camel_case_types)]
+            pub struct #sched_task_ident {}
+
+            impl RticTask for #sched_task_ident {
+                fn init() -> Self {
+                    Self {}
+                }
+
+                fn exec(&mut self) {
+                    use ::rtic_edf_pass::task::Runnable;
+
+                    let task_to_run =  unsafe { #static_ident.assume_init_mut() };
+                    task_to_run.mask_interrupt();
+
+                    SCHEDULER.schedule(
+                        ::rtic_edf_pass::task::Task::new(
+                            #deadline_us,
+                            #dispatcher_idx,
+                            task_to_run,
+                        ),
+                    );
+
+                }
+            }
+
+            // TODO: cortex-m is leaking here
+            impl ::rtic_edf_pass::task::Runnable for #task_ident {
+                fn run(&mut self) {
+                    self.exec();
+                }
+
+                unsafe fn unmask_interrupt(&mut self) {
+                    // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
+                    unsafe { ::cortex_m::peripheral::NVIC::unmask(Interrupt::#binds); }
+                }
+
+                 fn mask_interrupt(&mut self) {
+                    // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
+                    ::cortex_m::peripheral::NVIC::mask(Interrupt::#binds);
+                }
+           }
+        }
+    }
+}

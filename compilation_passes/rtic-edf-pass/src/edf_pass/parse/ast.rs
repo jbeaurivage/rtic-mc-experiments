@@ -1,8 +1,5 @@
-use heck::ToSnakeCase;
-use proc_macro2::{Span, TokenStream};
-use quote::format_ident;
 use rtic_core::parse_utils::RticAttr;
-use syn::{Expr, ItemStruct, Lit, Path, parse_quote};
+use syn::{Expr, ItemStruct, Lit, Path};
 
 use crate::util::Deadline;
 
@@ -50,19 +47,16 @@ impl AppParameters {
 }
 
 #[derive(Debug, Clone)]
-pub struct EdfTask {
+pub struct TaskStructDef {
     pub params: RticAttr,
     pub attr_idx: usize,
     pub task_struct: ItemStruct,
-    /// A task's priority, which is initially expressed as an explicit deadline
-    pub priority: Option<u32>,
-    pub dispatcher_idx: Option<usize>,
     pub deadline_us: Deadline,
     /// Interrupt handler signalling task arrival
     pub binds: Path,
 }
 
-impl EdfTask {
+impl TaskStructDef {
     pub fn from_struct((task_struct, attr_idx): (ItemStruct, usize)) -> syn::Result<Self> {
         let mut params = RticAttr::parse_from_attr(&task_struct.attrs[attr_idx])?;
 
@@ -97,80 +91,7 @@ impl EdfTask {
             attr_idx,
             task_struct,
             deadline_us,
-            priority: None,
-            dispatcher_idx: None,
             binds,
         })
-    }
-
-    pub fn generate_signal_binding(&self, priority: u32) -> TokenStream {
-        let binds = &self.binds;
-        let task_ident = &self.task_struct.ident;
-
-        let static_ident = syn::Ident::new(
-            &self
-                .task_struct
-                .ident
-                .to_string()
-                .to_snake_case()
-                .to_uppercase(),
-            Span::call_site(),
-        );
-
-        let dispatcher_idx: u16 = self
-            .dispatcher_idx
-            .expect("BUG: task should have an assigned priority by now")
-            .try_into()
-            .expect("Unsupported dispatcher index");
-
-        let sched_task_ident = format_ident!("__signal_scheduler_{}", self.task_struct.ident);
-        let deadline_us = self.deadline_us;
-
-        eprintln!("timestamper priority: {priority}");
-
-        parse_quote! {
-            #[task(priority = #priority, binds = #binds)]
-            #[allow(non_camel_case_types)]
-            pub struct #sched_task_ident {}
-
-            impl RticTask for #sched_task_ident {
-                fn init() -> Self {
-                    Self {}
-                }
-
-                fn exec(&mut self) {
-                    use ::rtic_edf_pass::task::Runnable;
-
-                    let task_to_run =  unsafe { #static_ident.assume_init_mut() };
-                    task_to_run.mask_interrupt();
-
-                    SCHEDULER.schedule(
-                        ::rtic_edf_pass::task::Task::new(
-                            #deadline_us,
-                            #dispatcher_idx,
-                            task_to_run,
-                        ),
-                    );
-
-                }
-            }
-
-            // TODO: cortex-m is leaking here
-            impl ::rtic_edf_pass::task::Runnable for #task_ident {
-                fn run(&mut self) {
-                    self.exec();
-                }
-
-                unsafe fn unmask_interrupt(&mut self) {
-                    // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
-                    unsafe { ::cortex_m::peripheral::NVIC::unmask(Interrupt::#binds); }
-                }
-
-                 fn mask_interrupt(&mut self) {
-                    // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
-                    ::cortex_m::peripheral::NVIC::mask(Interrupt::#binds);
-                }
-           }
-        }
     }
 }

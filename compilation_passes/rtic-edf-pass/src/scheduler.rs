@@ -10,7 +10,7 @@ use crate::{
 enum DispatcherSlot {
     Pending(RunningTask<'static>),
     Running,
-    Idle,
+    Ready,
 }
 
 pub struct DispatchQueue<const N: usize>(UnsafeCell<[DispatcherSlot; N]>);
@@ -18,7 +18,7 @@ pub struct DispatchQueue<const N: usize>(UnsafeCell<[DispatcherSlot; N]>);
 impl<const N: usize> DispatchQueue<N> {
     #[expect(clippy::new_without_default)]
     pub const fn new() -> Self {
-        Self(UnsafeCell::new([const { DispatcherSlot::Idle }; N]))
+        Self(UnsafeCell::new([const { DispatcherSlot::Ready }; N]))
     }
 
     #[expect(clippy::mut_from_ref)]
@@ -42,7 +42,7 @@ impl<const N: usize> DispatchQueue<N> {
     ) {
         let slot = unsafe { self.slot(cs, dispatcher_idx) };
 
-        if !matches!(slot, DispatcherSlot::Idle) {
+        if !matches!(slot, DispatcherSlot::Ready) {
             panic!("Task has been skipped!");
         }
 
@@ -75,13 +75,13 @@ impl<const N: usize> DispatchQueue<N> {
             panic!("Pending task set to idle!");
         }
 
-        let _ = core::mem::replace(slot, DispatcherSlot::Idle);
+        let _ = core::mem::replace(slot, DispatcherSlot::Ready);
     }
 
     /// Whether or not the dispatcher is ready to accept a new task to run
     fn ready<CS: DroppableCriticalSection>(&self, cs: &CS, dispatcher_idx: usize) -> bool {
         let slot = unsafe { self.slot(cs, dispatcher_idx) };
-        matches!(slot, DispatcherSlot::Idle)
+        matches!(slot, DispatcherSlot::Ready)
     }
 }
 
@@ -154,8 +154,7 @@ pub trait Scheduler<const S: usize, const Q: usize> {
             dispatcher_ready
         );
 
-        // if task.abs_deadline() < min_dl || dispatcher_ready {
-        if task.abs_deadline() < min_dl {
+        if task.abs_deadline() < min_dl || dispatcher_ready {
             #[cfg(feature = "defmt")]
             defmt::debug!("[PREEMPT]");
             self.execute(cs, task);

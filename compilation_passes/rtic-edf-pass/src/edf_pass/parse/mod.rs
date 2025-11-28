@@ -1,11 +1,26 @@
-use crate::{EdfPass, edf_pass::parse::ast::AppParameters};
+use crate::{EdfPass, edf_pass::parse::ast::AppParameters, util::Deadline};
 
-use super::parse::ast::EdfTask;
+use super::parse::ast::TaskStructDef;
 use proc_macro2::Ident;
 use rtic_core::parse_utils::RticAttr;
-use syn::{Item, ItemMod, ItemStruct, Visibility};
+use syn::{Item, ItemMod, ItemStruct, Path, Visibility};
 
 pub mod ast;
+
+#[derive(Debug, Clone)]
+pub struct EdfTask {
+    pub params: RticAttr,
+    pub attr_idx: usize,
+    pub task_struct: ItemStruct,
+    /// A task's priority, which is initially expressed as an explicit deadline
+    pub priority: u16,
+    pub dispatcher_idx: usize,
+    pub deadline_us: Deadline,
+    /// Each task gets assigned its own dispatcher
+    pub dispatcher: Path,
+    /// Interrupt handler signalling task arrival
+    pub binds: Path,
+}
 
 /// Type to represent an RTIC application for deadline to priority conversion
 pub struct App {
@@ -17,7 +32,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn parse(params: &RticAttr, mut app_mod: ItemMod) -> syn::Result<Self> {
+    pub fn parse(edf_pass: &EdfPass, params: &RticAttr, mut app_mod: ItemMod) -> syn::Result<Self> {
         let app_parameters = AppParameters::parse(params)?;
 
         let app_mod_items = app_mod.content.take().unwrap_or_default().1;
@@ -39,11 +54,17 @@ impl App {
                 _ => rest_of_code.push(item),
             }
         }
-        //rest_of_code.push(quote!(hello));
-        let tasks = task_structs
+
+        let task_defs = task_structs
             .into_iter()
-            .map(EdfTask::from_struct)
-            .collect::<syn::Result<_>>()?;
+            .map(TaskStructDef::from_struct)
+            .collect::<syn::Result<Vec<_>>>()?;
+
+        let tasks = Self::assign_dispatchers_and_priorities(
+            edf_pass,
+            task_defs,
+            &app_parameters.dispatchers,
+        );
 
         Ok(Self {
             mod_ident: app_mod.ident,
@@ -54,26 +75,16 @@ impl App {
         })
     }
 
-    pub(super) fn convert_deadlines_to_priorities(&mut self, edf_pass: &EdfPass) {
+    fn assign_dispatchers_and_priorities(
+        edf_pass: &EdfPass,
+        tasks: Vec<TaskStructDef>,
+        dispatchers: &[Path],
+    ) -> Vec<EdfTask> {
         use itertools::Itertools;
 
-        let mut sorted_tasks: Vec<_> = self.tasks.clone();
-
+        let mut sorted_tasks = tasks;
         sorted_tasks.sort_by_key(|t| t.deadline_us);
         sorted_tasks.reverse();
-
-        if sorted_tasks.len() as u16 > edf_pass.max_priority {
-            panic!(
-                "Exceeded number of priorities for this platform ({}), please coerce deadlines manually.",
-                edf_pass.max_priority
-            );
-        }
-
-        if self.app_parameters.dispatchers.len() != sorted_tasks.len() {
-            panic!(
-                "The EDF scheduler needs exactly as many dispatchers as there are tasks. Please add or remove dispatchers accordingly."
-            )
-        }
 
         // Get windows of identical deadlines and convert those to priorities
         let prio_groups = std::iter::once(true)
@@ -91,36 +102,49 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        sorted_tasks
-            .iter_mut()
+        let task_map: Vec<_> = sorted_tasks
+            .into_iter()
             .enumerate()
             .zip(prio_groups)
-            .for_each(|((idx, task), prio)| {
-                let prio = prio + edf_pass.min_priority as u32;
-                task.priority = Some(prio);
-                task.dispatcher_idx = Some(idx);
-            });
+            .zip(dispatchers)
+            .map(|(((dispatcher_idx, task), prio), dispatcher_path)| {
+                let priority = prio + edf_pass.min_priority;
 
-        eprintln!("min prio: {}", edf_pass.min_priority);
-        for t in sorted_tasks.iter() {
+                EdfTask {
+                    params: task.params,
+                    attr_idx: task.attr_idx,
+                    task_struct: task.task_struct,
+                    priority,
+                    dispatcher_idx,
+                    dispatcher: dispatcher_path.clone(),
+                    deadline_us: task.deadline_us,
+                    binds: task.binds,
+                }
+            })
+            .collect();
+
+        eprintln!("scheduler min prio: {}", edf_pass.min_priority);
+        for t in task_map.iter() {
             eprintln!(
-                "{} => prio: {:?}, idx: {:?} ",
-                t.deadline_us, t.priority, t.dispatcher_idx
+                "Task: deadline {} => prio: {:?}, dispatcher idx: {:?}, binding: {}",
+                t.deadline_us,
+                t.priority,
+                t.dispatcher_idx,
+                t.dispatcher.get_ident().unwrap()
             );
         }
-
-        // TODO: it would probably better to change the type of the stored rtic task
-        // rather than try to bodge with optional priorities and replacing the vec
-        let _ = std::mem::replace(&mut self.tasks, sorted_tasks);
+        task_map
     }
 
-    pub(super) fn scheduler_priority(&self) -> u32 {
+    pub(super) fn timestamper_priority(&self) -> u16 {
         self.tasks
             .iter()
-            .flat_map(|t| t.priority)
+            .map(|t| t.priority)
             .max()
             .map(|p| p + 1)
-            .expect("Scheduler should have a priority assigned")
+            // Technically this "1" priority is irrelevant if we have no
+            // EDF tasks, as no signaller binding will be generated.
+            .unwrap_or(1)
     }
 }
 
