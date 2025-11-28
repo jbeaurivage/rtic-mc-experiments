@@ -141,8 +141,10 @@ impl CodeGen {
     }
 
     fn generate_dispatcher_bindings(&self) -> Vec<TokenStream> {
-        // TODO: map each dispatcher to a prio level
-        // then assign each task its own dispatcher
+        // TODO: here we're relying on the fact that the vec is ordered to get
+        // the right task/dispatcher combo.
+        //
+        // Might be better to use a hashmap instead
         let dispatchers = self
             .app
             .tasks

@@ -199,9 +199,6 @@ pub trait Scheduler<const S: usize, const Q: usize> {
         Self::pend_dispatcher(dispatcher_idx);
     }
 
-    // TODO: there should be one dispatcher PER TASK so that we only need to
-    // maintain a single queue among all tasks Then we don't need to store
-    // function pointers either, which makes things simpler
     #[inline]
     fn dispatch<const D_IDX: usize>(&self) {
         let cs = Self::CS::enter();
