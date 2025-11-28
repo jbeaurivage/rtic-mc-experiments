@@ -1,2 +1,4 @@
 target/
 expanded.rs
+examples/expanded.rs
+.vscode/

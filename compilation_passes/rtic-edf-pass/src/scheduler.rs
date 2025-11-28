@@ -1,26 +1,91 @@
 use core::cell::UnsafeCell;
-use heapless::{BinaryHeap, Vec, binary_heap::Min};
+use heapless::{BinaryHeap, binary_heap::Min};
 
 use crate::{
     critical_section::DroppableCriticalSection,
-    task::{RunningTask, ScheduledTask, Task},
+    task::{Runnable, RunningTask, ScheduledTask, Task},
     util::Timestamp,
 };
 
-pub struct TaskStack<const N: usize>(UnsafeCell<Vec<RunningTask<'static>, N>>);
+enum DispatcherSlot {
+    Pending(RunningTask<'static>),
+    Running,
+    Idle,
+}
 
-impl<const N: usize> TaskStack<N> {
+pub struct DispatchQueue<const N: usize>(UnsafeCell<[DispatcherSlot; N]>);
+
+impl<const N: usize> DispatchQueue<N> {
     #[expect(clippy::new_without_default)]
     pub const fn new() -> Self {
-        Self(UnsafeCell::new(Vec::new()))
+        Self(UnsafeCell::new([const { DispatcherSlot::Idle }; N]))
     }
 
-    fn get_mut<CS: DroppableCriticalSection>(&self, _cs: &CS) -> *mut Vec<RunningTask<'static>, N> {
-        self.0.get()
+    #[expect(clippy::mut_from_ref)]
+    unsafe fn slot<CS: DroppableCriticalSection>(
+        &self,
+        _cs: &CS,
+        dispatcher_idx: usize,
+    ) -> &mut DispatcherSlot {
+        let queue = unsafe { &mut *self.0.get() };
+        queue
+            .get_mut(dispatcher_idx)
+            .expect("BUG: dispatcher idx doesn't exist")
+    }
+
+    /// Insert a pending task to the queue for later retrieval
+    fn pend_task<CS: DroppableCriticalSection>(
+        &self,
+        cs: &CS,
+        task: RunningTask<'static>,
+        dispatcher_idx: usize,
+    ) {
+        let slot = unsafe { self.slot(cs, dispatcher_idx) };
+
+        if !matches!(slot, DispatcherSlot::Idle) {
+            panic!("Task has been skipped!");
+        }
+
+        let _ = core::mem::replace(slot, DispatcherSlot::Pending(task));
+    }
+
+    /// Retrieve the task to run, and mark it as running in the message queue
+    fn retrieve<CS: DroppableCriticalSection>(
+        &self,
+        cs: &CS,
+        dispatcher_idx: usize,
+    ) -> Option<RunningTask<'_>> {
+        let slot = unsafe { self.slot(cs, dispatcher_idx) };
+        if let DispatcherSlot::Pending(_) = slot {
+            let DispatcherSlot::Pending(t) = core::mem::replace(slot, DispatcherSlot::Running)
+            else {
+                panic!("BUG: task should be pending");
+            };
+            Some(t)
+        } else {
+            None
+        }
+    }
+
+    /// Signal that the task has completed by marking the queue slot as idle
+    fn complete_task<CS: DroppableCriticalSection>(&self, cs: &CS, dispatcher_idx: usize) {
+        let slot = unsafe { self.slot(cs, dispatcher_idx) };
+
+        if !matches!(slot, DispatcherSlot::Running) {
+            panic!("Pending task set to idle!");
+        }
+
+        let _ = core::mem::replace(slot, DispatcherSlot::Idle);
+    }
+
+    /// Whether or not the dispatcher is ready to accept a new task to run
+    fn ready<CS: DroppableCriticalSection>(&self, cs: &CS, dispatcher_idx: usize) -> bool {
+        let slot = unsafe { self.slot(cs, dispatcher_idx) };
+        matches!(slot, DispatcherSlot::Idle)
     }
 }
 
-unsafe impl<const N: usize> Sync for TaskStack<N> {}
+unsafe impl<const N: usize> Sync for DispatchQueue<N> {}
 
 pub struct MinDeadline(UnsafeCell<Timestamp>);
 
@@ -37,11 +102,11 @@ impl MinDeadline {
 
 unsafe impl Sync for MinDeadline {}
 
-pub struct TaskQueue<const N: usize>(UnsafeCell<BinaryHeap<ScheduledTask<'static>, Min, N>>);
+pub struct WaitQueue<const N: usize>(UnsafeCell<BinaryHeap<ScheduledTask<'static>, Min, N>>);
 
-unsafe impl<const N: usize> Sync for TaskQueue<N> {}
+unsafe impl<const N: usize> Sync for WaitQueue<N> {}
 
-impl<const N: usize> TaskQueue<N> {
+impl<const N: usize> WaitQueue<N> {
     #[expect(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self(UnsafeCell::new(BinaryHeap::new()))
@@ -57,30 +122,48 @@ impl<const N: usize> TaskQueue<N> {
 
 pub trait Scheduler<const S: usize, const Q: usize> {
     type CS: DroppableCriticalSection;
+
     fn now() -> Timestamp;
-    fn pend_priority(prio: u16);
+    fn pend_dispatcher(idx: u16);
 
-    fn task_queue(&self) -> &TaskQueue<Q>;
+    fn dispatch_queue(&self) -> &DispatchQueue<S>;
     fn min_deadline(&self) -> &MinDeadline;
-    fn running_stack(&self) -> &TaskStack<S>;
+    fn wait_queue(&self) -> &WaitQueue<Q>;
 
-    fn schedule(&self, task: Task<'static>) {
+    fn schedule<R: Runnable>(&self, task: Task<'static, R>) {
         let cs = Self::CS::enter();
         let now = Self::now();
 
-        let task = task.into_queued(now);
-        let (stack, dl_ref) = unsafe {
-            (
-                &mut *self.running_stack().get_mut(&cs),
-                *self.min_deadline().get_mut(&cs),
-            )
-        };
+        let rel_dl = task.rel_deadline();
 
-        if task.abs_deadline() < dl_ref || stack.is_empty() {
+        let task = task.into_queued(now);
+        let min_dl = unsafe { *self.min_deadline().get_mut(&cs) };
+
+        let dispatcher_ready = self
+            .dispatch_queue()
+            .ready(&cs, task.dispatcher_idx() as usize);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "[SCHEDULE] now: {}, rel dl: {}, abs dl: {}, min dl: {}, dispatcher idx: {}, dispatcher ready: {}",
+            now,
+            rel_dl,
+            task.abs_deadline(),
+            min_dl,
+            task.dispatcher_idx(),
+            dispatcher_ready
+        );
+
+        // if task.abs_deadline() < min_dl || dispatcher_ready {
+        if task.abs_deadline() < min_dl {
+            #[cfg(feature = "defmt")]
+            defmt::debug!("[PREEMPT]");
             self.execute(cs, task);
         } else {
             {
-                let queue = unsafe { &mut *self.task_queue().get_mut(&cs) };
+                let queue = unsafe { &mut *self.wait_queue().get_mut(&cs) };
+                #[cfg(feature = "defmt")]
+                defmt::debug!("[ENQUEUE] queue length: {}", queue.len());
 
                 queue
                     .push(task)
@@ -90,60 +173,94 @@ pub trait Scheduler<const S: usize, const Q: usize> {
     }
 
     fn execute(&self, cs: Self::CS, task: ScheduledTask<'static>) {
-        let dl_ref = unsafe { &mut *self.min_deadline().get_mut(&cs) };
-        let prev_dl = *dl_ref;
-        *dl_ref = task.abs_deadline();
+        let min_dl = unsafe { &mut *self.min_deadline().get_mut(&cs) };
+        let prev_dl = *min_dl;
+        *min_dl = task.abs_deadline();
 
-        let stack = unsafe { &mut *self.running_stack().get_mut(&cs) };
-        let dispatcher_prio = task.dispatcher_prio();
+        let dispatcher_idx = task.dispatcher_idx();
 
-        stack
-            .push(crate::task::RunningTask::from_scheduled(task, prev_dl))
-            .unwrap_or_else(|_| panic!("BUG: EDF running task stack is fill"));
+        self.dispatch_queue().pend_task(
+            &cs,
+            crate::task::RunningTask::from_scheduled(task, prev_dl),
+            dispatcher_idx as usize,
+        );
         // let max_prio = stack.len() as u8;
 
-        Self::pend_priority(dispatcher_prio);
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            // "[EXEC] max prio: {}, dispatcher prio: {}, now: {}, new dl: {}, prev dl: {}",
+            "[EXEC] dispatcher idx: {}, new dl: {}, prev dl: {}",
+            // max_prio,
+            dispatcher_idx,
+            &*min_dl,
+            prev_dl
+        );
+
+        Self::pend_dispatcher(dispatcher_idx);
     }
 
+    // TODO: there should be one dispatcher PER TASK so that we only need to
+    // maintain a single queue among all tasks Then we don't need to store
+    // function pointers either, which makes things simpler
     #[inline]
-    fn trampoline(&self) {
-        let (task_to_run, prev_deadline) = unsafe {
-            let cs = Self::CS::enter();
-            let task = (&mut *self.running_stack().get_mut(&cs))
-                .last_mut()
-                .unwrap();
-            let prev_dl = task.prev_deadline();
-            (task.task_to_run(), prev_dl)
-        };
+    fn dispatch<const D_IDX: usize>(&self) {
+        let cs = Self::CS::enter();
 
-        // Finally call the actual task
+        let mut task_to_run = self
+            .dispatch_queue()
+            .retrieve(&cs, D_IDX)
+            .expect("BUG: a task should be available to run");
 
-        // TODO: SAFETY: dunno if it's actually unsound to hold onto the task to run
-        // until here, since we mutably borrow it inside the critical section that
-        // exits while we still hold the task
+        let prev_deadline = task_to_run.prev_deadline();
+
+        #[cfg(feature = "defmt")]
+        defmt::assert!(Self::now() <= task_to_run.abs_deadline(), "Missed deadline");
+        #[cfg(not(feature = "defmt"))]
+        assert!(Self::now() <= task_to_run.abs_deadline(), "Missed deadline");
+
+        cs.exit();
+
+        // Finally, call the actual task
         task_to_run.run();
 
         // And cleanup after ourselves
         let cs = Self::CS::enter();
-        let (stack, min_dl) = unsafe {
-            (
-                &mut *self.running_stack().get_mut(&cs),
-                &mut *self.min_deadline().get_mut(&cs),
-            )
-        };
+        self.dispatch_queue().complete_task(&cs, D_IDX);
+        unsafe {
+            task_to_run.unmask_interrupt();
+        }
 
-        stack.pop().unwrap();
+        let min_dl = unsafe { &mut *self.min_deadline().get_mut(&cs) };
+
         // Restore previous deadline
         *min_dl = prev_deadline;
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            // "[COMPLETE TASK] new dl: {}, stack depth: {}",
+            "[COMPLETE TASK] new dl: {}, dispatcher idx: {}",
+            prev_deadline,
+            D_IDX,
+            // stack.len(),
+        );
 
         // It's possible that a task showed up in the queue as the previous task was
         // running. So we need to check if it would preempt the next task in line to
         // run, which would start as soon as the critical section exits.
-        let queue = unsafe { &mut *self.task_queue().get_mut(&cs) };
+        //
+        // If the next task's dispatcher is currently ready to accept tasks, we can
+        // send it to its own dispatcher. This is how we can retrieve items from the
+        // queue.
+        let queue = unsafe { &mut *self.wait_queue().get_mut(&cs) };
         if let Some(task) = queue.peek()
-            && (task.abs_deadline() < *min_dl || stack.is_empty())
+            && (task.abs_deadline() < *min_dl
+                || (self
+                    .dispatch_queue()
+                    .ready(&cs, task.dispatcher_idx() as usize)))
         {
             let task = unsafe { queue.pop_unchecked() };
+            #[cfg(feature = "defmt")]
+            defmt::debug!("[DEQUEUE TASK] dispatcher idx: {}", task.dispatcher_idx());
             self.execute(cs, task);
         }
     }

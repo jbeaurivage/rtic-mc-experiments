@@ -8,12 +8,12 @@ extern crate proc_macro;
 use rtic_edf_pass::EdfPass;
 struct AtsamdEdfRtic;
 
-const MIN_TASK_PRIORITY: u16 = 15; // cortex m3 has 16 programmable priority levels (0 -> 15) with level 15 being the lowest
-const MAX_TASK_PRIORITY: u16 = 0;
+const MIN_TASK_PRIORITY: u16 = 1;
+const MAX_TASK_PRIORITY: u16 = 15;
 #[proc_macro_attribute]
 pub fn app(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut builder = RticMacroBuilder::new(AtsamdEdfRtic);
-    let edf_pass = EdfPass::new(MIN_TASK_PRIORITY);
+    let edf_pass = EdfPass::new(MIN_TASK_PRIORITY, MAX_TASK_PRIORITY);
     builder.bind_pre_core_pass(edf_pass);
     builder.bind_pre_core_pass(AutoAssignPass); // run auto-assign first
     builder.build_rtic_macro(args, input)
@@ -22,7 +22,7 @@ pub fn app(args: TokenStream, input: TokenStream) -> TokenStream {
 // =========================================== Trait implementations ===================================================
 impl CorePassBackend for AtsamdEdfRtic {
     fn default_task_priority(&self) -> u16 {
-        MIN_TASK_PRIORITY
+        1
     }
     fn post_init(
         &self,

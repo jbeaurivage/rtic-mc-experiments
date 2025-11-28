@@ -1,18 +1,26 @@
+use core::fmt::Debug;
+
 use crate::util::{Deadline, Timestamp};
 
-pub trait Runnable {
+pub trait Runnable: 'static {
     fn run(&mut self);
+    fn mask_interrupt(&mut self);
+
+    /// # Safety
+    ///
+    /// May break interrupt masking-based critical sections if misused
+    unsafe fn unmask_interrupt(&mut self);
 }
 
-pub struct Task<'a> {
+pub struct Task<'a, R: Runnable> {
     rel_deadline: Deadline,
     dispatcher_prio: u16,
-    task: &'a mut dyn Runnable,
+    task: &'a mut R,
     // callback: fn(),
 }
 
-impl<'a> Task<'a> {
-    pub fn new(rel_deadline: Deadline, dispatcher_prio: u16, tsk: &'a mut dyn Runnable) -> Self {
+impl<'a, R: Runnable> Task<'a, R> {
+    pub fn new(rel_deadline: Deadline, dispatcher_prio: u16, tsk: &'a mut R) -> Self {
         Self {
             rel_deadline,
             dispatcher_prio,
@@ -31,15 +39,24 @@ impl<'a> Task<'a> {
     pub fn into_queued(self, now: Timestamp) -> ScheduledTask<'a> {
         ScheduledTask {
             deadline: now.wrapping_add(self.rel_deadline),
-            dispatcher_prio: self.dispatcher_prio,
+            dispatcher_idx: self.dispatcher_prio,
             task: self.task,
         }
     }
 }
 
+impl<R: Runnable> Debug for Task<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Task")
+            .field("rel_deadline", &self.rel_deadline)
+            .field("dispatcher_prio", &self.dispatcher_prio)
+            .finish()
+    }
+}
+
 pub struct ScheduledTask<'a> {
     deadline: Timestamp,
-    dispatcher_prio: u16,
+    dispatcher_idx: u16,
     task: &'a mut dyn Runnable,
     // callback: fn(),
 }
@@ -49,8 +66,8 @@ impl ScheduledTask<'_> {
         self.deadline
     }
 
-    pub fn dispatcher_prio(&self) -> u16 {
-        self.dispatcher_prio
+    pub fn dispatcher_idx(&self) -> u16 {
+        self.dispatcher_idx
     }
 }
 
@@ -74,8 +91,18 @@ impl Ord for ScheduledTask<'_> {
     }
 }
 
+impl Debug for ScheduledTask<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Task")
+            .field("deadline", &self.deadline)
+            .field("dispatcher_idx", &self.dispatcher_idx)
+            .finish()
+    }
+}
+
 pub struct RunningTask<'a> {
     prev_deadline: Timestamp,
+    abs_deadline: Timestamp,
     task: &'a mut dyn Runnable,
     // callback: fn(),
 }
@@ -84,7 +111,20 @@ impl<'a> RunningTask<'a> {
     pub fn from_scheduled(task: ScheduledTask<'a>, prev_deadline: Timestamp) -> Self {
         Self {
             prev_deadline,
+            abs_deadline: task.deadline,
             task: task.task,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn run(&mut self) {
+        self.task.run();
+    }
+
+    #[inline]
+    pub(crate) unsafe fn unmask_interrupt(&mut self) {
+        unsafe {
+            self.task.unmask_interrupt();
         }
     }
 
@@ -92,11 +132,8 @@ impl<'a> RunningTask<'a> {
         self.prev_deadline
     }
 
-    pub fn task_to_run<'b>(&'a mut self) -> &'b mut dyn Runnable
-    where
-        'a: 'b,
-    {
-        self.task
+    pub fn abs_deadline(&self) -> Timestamp {
+        self.abs_deadline
     }
 
     // pub fn callback(&self) -> fn() {

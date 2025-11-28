@@ -140,9 +140,10 @@ impl HardwareTask {
         Some(quote! {
             #cfg_core
             #[allow(non_snake_case)]
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #(#task_attrs)*
-            fn #task_irq_handler() {
+            // TODO: different platforms might have different ABIs for IRQs
+            extern "C" fn #task_irq_handler() {
                 #task_dispatch_call
             }
         })

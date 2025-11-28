@@ -55,25 +55,63 @@ impl App {
     }
 
     pub(super) fn convert_deadlines_to_priorities(&mut self, edf_pass: &EdfPass) {
-        let mut deadlines: Vec<_> = self.tasks.iter().map(|t| t.deadline_us).collect();
+        use itertools::Itertools;
 
-        deadlines.sort();
-        deadlines.dedup();
-        // TODO: should this be reversed? What is the priority ordering considered by RTIC?
-        // deadlines.reverse();
+        let mut sorted_tasks: Vec<_> = self.tasks.clone();
 
-        if deadlines.len() as u16 > edf_pass.max_priority {
+        sorted_tasks.sort_by_key(|t| t.deadline_us);
+        sorted_tasks.reverse();
+
+        if sorted_tasks.len() as u16 > edf_pass.max_priority {
             panic!(
                 "Exceeded number of priorities for this platform ({}), please coerce deadlines manually.",
                 edf_pass.max_priority
             );
         }
 
-        // Transform deadlines into priorities that will be passed as hardware tasks
-        for t in self.tasks.iter_mut() {
-            let pos = deadlines.iter().position(|d| *d == t.deadline_us).unwrap();
-            t.priority = Some(pos as u32 + 1);
+        if self.app_parameters.dispatchers.len() != sorted_tasks.len() {
+            panic!(
+                "The EDF scheduler needs exactly as many dispatchers as there are tasks. Please add or remove dispatchers accordingly."
+            )
         }
+
+        // Get windows of identical deadlines and convert those to priorities
+        let prio_groups = std::iter::once(true)
+            .chain(
+                sorted_tasks
+                    .iter()
+                    .tuple_windows()
+                    .map(|(a, b)| a.deadline_us != b.deadline_us),
+            )
+            .scan(0, |acc, is_new| {
+                if is_new {
+                    *acc += 1;
+                }
+                Some(*acc)
+            })
+            .collect::<Vec<_>>();
+
+        sorted_tasks
+            .iter_mut()
+            .enumerate()
+            .zip(prio_groups)
+            .for_each(|((idx, task), prio)| {
+                let prio = prio + edf_pass.min_priority as u32;
+                task.priority = Some(prio);
+                task.dispatcher_idx = Some(idx);
+            });
+
+        eprintln!("min prio: {}", edf_pass.min_priority);
+        for t in sorted_tasks.iter() {
+            eprintln!(
+                "{} => prio: {:?}, idx: {:?} ",
+                t.deadline_us, t.priority, t.dispatcher_idx
+            );
+        }
+
+        // TODO: it would probably better to change the type of the stored rtic task
+        // rather than try to bodge with optional priorities and replacing the vec
+        let _ = std::mem::replace(&mut self.tasks, sorted_tasks);
     }
 
     pub(super) fn scheduler_priority(&self) -> u32 {
@@ -86,7 +124,8 @@ impl App {
     }
 }
 
-/// returns the index of the `attr_name` attribute if found in the attribute list of some struct
+/// returns the index of the `attr_name` attribute if found in the attribute
+/// list of some struct
 fn is_struct_with_attr(strct: &ItemStruct, attr_name: &str) -> Option<usize> {
     for (i, attr) in strct.attrs.iter().enumerate() {
         let path = attr.meta.path();

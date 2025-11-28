@@ -10,13 +10,17 @@ use rtic_core::parse_utils::RticAttr;
 use syn::{ItemMod, parse_quote};
 
 pub struct EdfPass {
+    min_priority: u16,
     max_priority: u16,
 }
 
 impl EdfPass {
     #[allow(clippy::new_without_default)]
-    pub fn new(max_priority: u16) -> Self {
-        Self { max_priority }
+    pub fn new(min_priority: u16, max_priority: u16) -> Self {
+        Self {
+            min_priority,
+            max_priority,
+        }
     }
 }
 

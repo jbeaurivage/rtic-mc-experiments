@@ -21,8 +21,8 @@ impl CodeGen {
             .map(|task| {
                 let task_attribute = &task.params;
                 let task_struct = &mut task.task_struct;
-                // remove the older task attribute and replace with the updated one which includes an
-                // automatically assigned core
+                // remove the older task attribute and replace with the updated one which
+                // includes an automatically assigned core
                 task_struct.attrs.remove(task.attr_idx);
                 quote! {
                     #task_attribute
@@ -43,7 +43,8 @@ impl CodeGen {
         let scheduler_dispatcher_bindings = self.generate_dispatcher_bindings();
         tasks.extend(scheduler_dispatcher_bindings);
 
-        // let shared_resources = self.app.shared_resources.iter().map(|s| &s.shared_struct);
+        // let shared_resources = self.app.shared_resources.iter().map(|s|
+        // &s.shared_struct);
         let ret = parse_quote! {
             #mod_visibility mod #mod_ident {
 
@@ -80,17 +81,17 @@ impl CodeGen {
 
             use ::rtic_edf_pass::scheduler::Scheduler;
             pub struct NvicScheduler {
-                running_stack: ::rtic_edf_pass::scheduler::TaskStack<NUM_EDF_DISPATCHERS>,
+               running_queue: ::rtic_edf_pass::scheduler::DispatchQueue<NUM_EDF_DISPATCHERS>,
                 min_deadline: ::rtic_edf_pass::scheduler::MinDeadline,
-                task_queue: ::rtic_edf_pass::scheduler::TaskQueue<EDF_QUEUE_LEN>,
+                task_queue: ::rtic_edf_pass::scheduler::WaitQueue<EDF_QUEUE_LEN>,
             }
 
             impl NvicScheduler {
                 pub const fn new() -> Self {
                     Self {
-                        running_stack: ::rtic_edf_pass::scheduler::TaskStack::new(),
+                       running_queue: ::rtic_edf_pass::scheduler::DispatchQueue::new(),
                         min_deadline: ::rtic_edf_pass::scheduler::MinDeadline::new(),
-                        task_queue: ::rtic_edf_pass::scheduler::TaskQueue::new(),
+                        task_queue: ::rtic_edf_pass::scheduler::WaitQueue::new(),
                     }
                 }
             }
@@ -105,8 +106,8 @@ impl CodeGen {
                 }
 
                 #[inline]
-                fn running_stack(&self) -> &::rtic_edf_pass::scheduler::TaskStack<NUM_EDF_DISPATCHERS> {
-                    &self.running_stack
+                fn dispatch_queue(&self) -> &::rtic_edf_pass::scheduler::DispatchQueue<NUM_EDF_DISPATCHERS> {
+                    &self.running_queue
                 }
 
                 #[inline]
@@ -115,13 +116,13 @@ impl CodeGen {
                 }
 
                 #[inline]
-                fn task_queue(&self) -> &::rtic_edf_pass::scheduler::TaskQueue<EDF_QUEUE_LEN> {
+                fn wait_queue(&self) -> &::rtic_edf_pass::scheduler::WaitQueue<EDF_QUEUE_LEN> {
                     &self.task_queue
                 }
 
                 #[inline]
-                fn pend_priority(prio: u16) {
-                    ::cortex_m::peripheral::NVIC::pend(EDF_DISPATCHERS[prio as usize]);
+                fn pend_dispatcher(idx: u16) {
+                    ::cortex_m::peripheral::NVIC::pend(EDF_DISPATCHERS[idx as usize]);
                 }
             }
 
@@ -140,24 +141,28 @@ impl CodeGen {
     }
 
     fn generate_dispatcher_bindings(&self) -> Vec<TokenStream> {
+        // TODO: map each dispatcher to a prio level
+        // then assign each task its own dispatcher
         let dispatchers = self
             .app
-            .app_parameters
-            .dispatchers
+            .tasks
             .iter()
-            .enumerate()
-            .map(|(p, d)| (p, d.get_ident()))
-            .collect::<Vec<_>>();
+            .zip(self.app.app_parameters.dispatchers.iter())
+            .enumerate();
 
         let mut tokens = vec![];
 
-        for d in dispatchers {
-            let prio = d.0 + 1;
-            let binding = d.1;
-            let dispatcher_ident = format_ident!("EdfPrio{prio}Dispatcher");
+        for (dispatcher_idx, (task, dispatcher)) in dispatchers {
+            let logical_prio = task
+                .priority
+                .expect("Task needs an assigned dispatcher prioriry");
+
+            eprintln!("dispatcher priority: {logical_prio}");
+
+            let dispatcher_ident = format_ident!("EdfDispatcher{dispatcher_idx}");
             tokens.push(parse_quote! {
 
-                #[task(priority = #prio, binds = #binding)]
+                #[task(priority = #logical_prio, binds = #dispatcher)]
                 struct #dispatcher_ident {}
 
                 impl RticTask for #dispatcher_ident {
@@ -166,7 +171,7 @@ impl CodeGen {
                     }
 
                     fn exec(&mut self) {
-                        SCHEDULER.trampoline();
+                        SCHEDULER.dispatch::<#dispatcher_idx>();
                     }
                 }
             })

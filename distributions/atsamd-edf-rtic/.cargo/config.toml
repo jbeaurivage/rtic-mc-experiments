@@ -1,12 +1,14 @@
 [build]
 target = "thumbv7em-none-eabihf"
 
-[target.thumbv7m-none-eabi]
-runner = "gdb-multiarch -q -x openocd.gdb"
+[target.thumbv7em-none-eabihf]
+runner = 'probe-rs run --chip ATSAMD51J19A --speed 20000'
 rustflags = [
   # LLD (shipped with the Rust toolchain) is used as the default linker
   "-C", "link-arg=-Tlink.x",
   "-C", "embed-bitcode=yes",
+  "-C", "link-arg=--nmagic",
+  "-C", "link-arg=-Tdefmt.x", # uncomment if using defmt
 
   # if you run into problems with LLD switch to the GNU linker by commenting out
   # this line
