@@ -10,6 +10,6 @@ pub use edf_pass::*;
 pub mod critical_section;
 pub mod scheduler;
 pub mod task;
-pub mod util;
+pub mod types;
 
 pub mod export;

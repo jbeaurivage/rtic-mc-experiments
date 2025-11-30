@@ -52,12 +52,12 @@ mod app {
         // Instantiate a timer object for the TC4 timer/counter
         let mut timer = TimerCounter::tc4_(tc45, peripherals.tc4, &mut peripherals.mclk);
         timer.start(500.millis());
-        // timer.enable_interrupt();
+        timer.enable_interrupt();
 
         // Instantiate a timer object for the TC5 timer/counter
         let mut timer = TimerCounter::tc5_(tc45, peripherals.tc5, &mut peripherals.mclk);
         timer.start(100.millis());
-        timer.enable_interrupt();
+        // timer.enable_interrupt();
 
         Shared { x: 0 }
     }
@@ -128,7 +128,7 @@ mod app {
             });
 
             // Manually pend another task to force it to get enqueued
-            NVIC::pend(Interrupt::TC4);
+            // NVIC::pend(Interrupt::TC4);
             defmt::info!("Short Timer task x = {}", a);
             // cortex_m::asm::delay(1_000_000);
         }

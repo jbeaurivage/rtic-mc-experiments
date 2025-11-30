@@ -11,7 +11,8 @@ pub use cortex_m::{
 };
 use rtic_edf_pass::critical_section::DroppableCriticalSection;
 
-/// Distribution crate must re-export the `export` module from all the used compilation passes
+/// Distribution crate must re-export the `export` module from all the used
+/// compilation passes
 #[allow(unused_imports)]
 pub use rtic_edf_pass::export::*;
 
@@ -45,8 +46,8 @@ where
 /// The system ceiling is raised from current to ceiling
 /// by either
 /// - raising the BASEPRI to the ceiling value, or
-/// - disable all interrupts in case we want to
-///   mask interrupts with maximum priority
+/// - disable all interrupts in case we want to mask interrupts with maximum
+///   priority
 ///
 /// Dereferencing a raw pointer inside CS
 ///
@@ -71,8 +72,6 @@ where
 /// even in some edge cases where this may be omitted.
 /// Total OH of per task is max 2 clock cycles, negligible in practice
 /// but can in theory be fixed.
-///
-///
 #[inline(always)]
 pub unsafe fn lock<T, R>(
     ptr: *mut T,

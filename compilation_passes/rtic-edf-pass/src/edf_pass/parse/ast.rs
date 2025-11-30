@@ -1,7 +1,7 @@
 use rtic_core::parse_utils::RticAttr;
 use syn::{Expr, ItemStruct, Lit, Path};
 
-use crate::util::Deadline;
+use crate::types::Deadline;
 
 pub struct AppParameters {
     pub dispatchers: Vec<Path>,

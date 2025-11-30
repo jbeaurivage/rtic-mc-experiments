@@ -70,7 +70,7 @@ impl CodeGen {
             .enumerate()
             .map(|(i, task)| {
                 assert_eq!(
-                    i, task.dispatcher_idx,
+                    i, task.dispatcher_idx as usize,
                     "RTIC codegen bug: Tasks vector is not sequentially sorted."
                 );
                 task.dispatcher.get_ident()
@@ -84,6 +84,8 @@ impl CodeGen {
         parse_quote! {
             const EDF_QUEUE_LEN: usize = #queue_len;
             const NUM_EDF_DISPATCHERS: usize = #num_dispatchers;
+
+            // TODO: cortex-m leaking here?
             const EDF_DISPATCHERS: [#pac_path::Interrupt; NUM_EDF_DISPATCHERS] = [
                 #(#pac_path::Interrupt::#dispatchers,)*
             ];
@@ -91,7 +93,7 @@ impl CodeGen {
             use ::rtic_edf_pass::scheduler::Scheduler;
             pub struct NvicScheduler {
                running_queue: ::rtic_edf_pass::scheduler::DispatchQueue<NUM_EDF_DISPATCHERS>,
-                min_deadline: ::rtic_edf_pass::scheduler::MinDeadline,
+                min_deadline: ::rtic_edf_pass::scheduler::SystemDeadline,
                 task_queue: ::rtic_edf_pass::scheduler::WaitQueue<EDF_QUEUE_LEN>,
             }
 
@@ -99,7 +101,7 @@ impl CodeGen {
                 pub const fn new() -> Self {
                     Self {
                        running_queue: ::rtic_edf_pass::scheduler::DispatchQueue::new(),
-                        min_deadline: ::rtic_edf_pass::scheduler::MinDeadline::new(),
+                        min_deadline: ::rtic_edf_pass::scheduler::SystemDeadline::new(),
                         task_queue: ::rtic_edf_pass::scheduler::WaitQueue::new(),
                     }
                 }
@@ -110,7 +112,7 @@ impl CodeGen {
                 type CS = ::cortex_m_edf_rtic::export::CsGuard;
 
                 #[inline]
-                fn now() -> ::rtic_edf_pass::util::Timestamp {
+                fn now() -> ::rtic_edf_pass::types::Timestamp {
                     ::cortex_m::peripheral::DWT::cycle_count()
                 }
 
@@ -120,7 +122,7 @@ impl CodeGen {
                 }
 
                 #[inline]
-                fn min_deadline(&self) -> &::rtic_edf_pass::scheduler::MinDeadline {
+                fn system_deadline(&self) -> &::rtic_edf_pass::scheduler::SystemDeadline {
                     &self.min_deadline
                 }
 
@@ -156,11 +158,23 @@ impl CodeGen {
             let dispatcher_prio = task.priority;
             let dispatcher_binding = &task.dispatcher;
             let dispatcher_idx = task.dispatcher_idx;
+            let task_ident = &task.task_struct.ident;
 
-            let dispatcher_ident = format_ident!("EdfDispatcher{dispatcher_idx}");
+            let static_ident = syn::Ident::new(
+                &task
+                    .task_struct
+                    .ident
+                    .to_string()
+                    .to_snake_case()
+                    .to_uppercase(),
+                Span::call_site(),
+            );
+
+            let dispatcher_ident = format_ident!("__edf_scheduler_dispatch_{task_ident}");
             tokens.push(parse_quote! {
 
                 #[task(priority = #dispatcher_prio, binds = #dispatcher_binding)]
+                #[allow(non_camel_case_types)]
                 struct #dispatcher_ident {}
 
                 impl RticTask for #dispatcher_ident {
@@ -169,7 +183,12 @@ impl CodeGen {
                     }
 
                     fn exec(&mut self) {
-                        SCHEDULER.dispatch::<#dispatcher_idx>();
+                        const DISPATCHER_IDX: u16 = #dispatcher_idx;
+
+                        let task_to_run =  unsafe { #static_ident.assume_init_mut() };
+                        let deadline_to_restore = SCHEDULER.dispatcher_entry(DISPATCHER_IDX);
+                        task_to_run.exec();
+                        SCHEDULER.dispatcher_exit::<#task_ident>(deadline_to_restore);
                     }
                 }
             })
@@ -182,24 +201,10 @@ impl CodeGen {
 impl EdfTask {
     pub fn generate_timestamper_binding(&self, priority: u16) -> TokenStream {
         let binds = &self.binds;
-        let task_ident = &self.task_struct.ident;
+        let task_struct_ident = &self.task_struct.ident;
 
-        let static_ident = syn::Ident::new(
-            &self
-                .task_struct
-                .ident
-                .to_string()
-                .to_snake_case()
-                .to_uppercase(),
-            Span::call_site(),
-        );
-
-        let dispatcher_idx: u16 = self
-            .dispatcher_idx
-            .try_into()
-            .expect("Unsupported dispatcher index");
-
-        let sched_task_ident = format_ident!("__signal_scheduler_{}", self.task_struct.ident);
+        let dispatcher_idx = self.dispatcher_idx;
+        let sched_task_ident = format_ident!("__edf_scheduler_signal_{task_struct_ident}");
         let deadline_us = self.deadline_us;
 
         eprintln!(
@@ -218,16 +223,13 @@ impl EdfTask {
                 }
 
                 fn exec(&mut self) {
-                    use ::rtic_edf_pass::task::Runnable;
+                    use ::rtic_edf_pass::task::EdfTaskBinding;
 
-                    let task_to_run =  unsafe { #static_ident.assume_init_mut() };
-                    task_to_run.mask_interrupt();
-
+                    #task_struct_ident::mask_timestamper_interrupt();
                     SCHEDULER.schedule(
                         ::rtic_edf_pass::task::Task::new(
                             #deadline_us,
-                            #dispatcher_idx,
-                            task_to_run,
+                            <#task_struct_ident as ::rtic_edf_pass::task::EdfTaskBinding>::DISPATCHER_IDX,
                         ),
                     );
 
@@ -235,17 +237,15 @@ impl EdfTask {
             }
 
             // TODO: cortex-m is leaking here
-            impl ::rtic_edf_pass::task::Runnable for #task_ident {
-                fn run(&mut self) {
-                    self.exec();
-                }
+            impl ::rtic_edf_pass::task::EdfTaskBinding for #task_struct_ident {
+                const DISPATCHER_IDX: u16 = #dispatcher_idx;
 
-                unsafe fn unmask_interrupt(&mut self) {
+                unsafe fn unmask_timestamper_interrupt() {
                     // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
                     unsafe { ::cortex_m::peripheral::NVIC::unmask(Interrupt::#binds); }
                 }
 
-                 fn mask_interrupt(&mut self) {
+                 fn mask_timestamper_interrupt() {
                     // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
                     ::cortex_m::peripheral::NVIC::mask(Interrupt::#binds);
                 }

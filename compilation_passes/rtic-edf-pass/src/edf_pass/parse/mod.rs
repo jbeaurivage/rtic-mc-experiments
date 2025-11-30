@@ -1,4 +1,4 @@
-use crate::{EdfPass, edf_pass::parse::ast::AppParameters, util::Deadline};
+use crate::{EdfPass, edf_pass::parse::ast::AppParameters, types::Deadline};
 
 use super::parse::ast::TaskStructDef;
 use proc_macro2::Ident;
@@ -14,7 +14,7 @@ pub struct EdfTask {
     pub task_struct: ItemStruct,
     /// A task's priority, which is initially expressed as an explicit deadline
     pub priority: u16,
-    pub dispatcher_idx: usize,
+    pub dispatcher_idx: u16,
     pub deadline_us: Deadline,
     /// Each task gets assigned its own dispatcher
     pub dispatcher: Path,
@@ -115,7 +115,9 @@ impl App {
                     attr_idx: task.attr_idx,
                     task_struct: task.task_struct,
                     priority,
-                    dispatcher_idx,
+                    dispatcher_idx: dispatcher_idx
+                        .try_into()
+                        .expect("Unsupported dispatcher priority level: over u16::MAX"),
                     dispatcher: dispatcher_path.clone(),
                     deadline_us: task.deadline_us,
                     binds: task.binds,

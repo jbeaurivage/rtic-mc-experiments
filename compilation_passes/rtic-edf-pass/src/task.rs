@@ -1,30 +1,35 @@
 use core::fmt::Debug;
 
-use crate::util::{Deadline, Timestamp};
+use crate::types::{Deadline, Timestamp};
 
-pub trait Runnable: 'static {
-    fn run(&mut self);
-    fn mask_interrupt(&mut self);
+pub trait EdfTaskBinding {
+    /// Dispatcher index associated with this task
+    const DISPATCHER_IDX: u16;
 
+    /// Mask the task's timestamper interrupt, therefore preventing it from
+    /// preempting
+    fn mask_timestamper_interrupt();
+
+    /// Unmask the task's timestamper interrupt, therefore allowing it to resume
+    /// preempting
+    ///
     /// # Safety
     ///
     /// May break interrupt masking-based critical sections if misused
-    unsafe fn unmask_interrupt(&mut self);
+    unsafe fn unmask_timestamper_interrupt();
 }
 
-pub struct Task<'a, R: Runnable> {
+#[derive(Debug)]
+pub struct Task {
     rel_deadline: Deadline,
-    dispatcher_prio: u16,
-    task: &'a mut R,
-    // callback: fn(),
+    dispatcher_idx: u16,
 }
 
-impl<'a, R: Runnable> Task<'a, R> {
-    pub fn new(rel_deadline: Deadline, dispatcher_prio: u16, tsk: &'a mut R) -> Self {
+impl Task {
+    pub fn new(rel_deadline: Deadline, dispatcher_idx: u16) -> Self {
         Self {
             rel_deadline,
-            dispatcher_prio,
-            task: tsk,
+            dispatcher_idx,
         }
     }
 
@@ -36,32 +41,21 @@ impl<'a, R: Runnable> Task<'a, R> {
         self.rel_deadline = deadline;
     }
 
-    pub fn into_queued(self, now: Timestamp) -> ScheduledTask<'a> {
+    pub(crate) fn into_queued(self, now: Timestamp) -> ScheduledTask {
         ScheduledTask {
             deadline: now.wrapping_add(self.rel_deadline),
-            dispatcher_idx: self.dispatcher_prio,
-            task: self.task,
+            dispatcher_idx: self.dispatcher_idx,
         }
     }
 }
 
-impl<R: Runnable> Debug for Task<'_, R> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Task")
-            .field("rel_deadline", &self.rel_deadline)
-            .field("dispatcher_prio", &self.dispatcher_prio)
-            .finish()
-    }
-}
-
-pub struct ScheduledTask<'a> {
+#[derive(Debug)]
+pub(crate) struct ScheduledTask {
     deadline: Timestamp,
     dispatcher_idx: u16,
-    task: &'a mut dyn Runnable,
-    // callback: fn(),
 }
 
-impl ScheduledTask<'_> {
+impl ScheduledTask {
     pub fn abs_deadline(&self) -> Timestamp {
         self.deadline
     }
@@ -71,72 +65,48 @@ impl ScheduledTask<'_> {
     }
 }
 
-impl PartialEq for ScheduledTask<'_> {
+// Tasks are only compared against each other on the basis of their deadline
+impl PartialEq for ScheduledTask {
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline
     }
 }
 
-impl Eq for ScheduledTask<'_> {}
+impl Eq for ScheduledTask {}
 
-impl PartialOrd for ScheduledTask<'_> {
+impl PartialOrd for ScheduledTask {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for ScheduledTask<'_> {
+impl Ord for ScheduledTask {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.deadline.cmp(&other.deadline)
     }
 }
 
-impl Debug for ScheduledTask<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Task")
-            .field("deadline", &self.deadline)
-            .field("dispatcher_idx", &self.dispatcher_idx)
-            .finish()
-    }
-}
-
-pub struct RunningTask<'a> {
+#[derive(Debug, Clone)]
+pub(crate) struct RunningTask {
     prev_deadline: Timestamp,
+    // TODO: this field is not strictly necessary, only if we want to assert that we haven't missed
+    // a deadline when we start executing the task
     abs_deadline: Timestamp,
-    task: &'a mut dyn Runnable,
-    // callback: fn(),
 }
 
-impl<'a> RunningTask<'a> {
-    pub fn from_scheduled(task: ScheduledTask<'a>, prev_deadline: Timestamp) -> Self {
+impl RunningTask {
+    pub(crate) fn from_scheduled(task: ScheduledTask, prev_deadline: Timestamp) -> Self {
         Self {
             prev_deadline,
             abs_deadline: task.deadline,
-            task: task.task,
         }
     }
 
-    #[inline]
-    pub(crate) fn run(&mut self) {
-        self.task.run();
-    }
-
-    #[inline]
-    pub(crate) unsafe fn unmask_interrupt(&mut self) {
-        unsafe {
-            self.task.unmask_interrupt();
-        }
-    }
-
-    pub fn prev_deadline(&self) -> Timestamp {
+    pub(crate) fn prev_deadline(&self) -> Timestamp {
         self.prev_deadline
     }
 
-    pub fn abs_deadline(&self) -> Timestamp {
+    pub(crate) fn abs_deadline(&self) -> Timestamp {
         self.abs_deadline
     }
-
-    // pub fn callback(&self) -> fn() {
-    //     self.callback
-    // }
 }
