@@ -29,7 +29,8 @@ pub trait EdfTaskBinding {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Task {
     rel_deadline: Deadline,
-    /// The index of this task's dispatcher in the list of all available dispatchers
+    /// The index of this task's dispatcher in the list of all available
+    /// dispatchers
     dispatcher_idx: u16,
     /// The run queue index of this task's dispatcher
     rq_idx: u16,

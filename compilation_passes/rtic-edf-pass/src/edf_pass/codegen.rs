@@ -213,11 +213,6 @@ impl EdfTask {
         let sched_task_ident = format_ident!("__edf_scheduler_signal_{task_struct_ident}");
         let deadline_us = self.deadline_us;
 
-        eprintln!(
-            "timestamper: priority {priority}, irq: {}",
-            binds.get_ident().unwrap()
-        );
-
         parse_quote! {
             #[task(priority = #priority, binds = #binds)]
             #[allow(non_camel_case_types)]

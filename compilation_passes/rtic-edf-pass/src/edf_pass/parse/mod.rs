@@ -106,7 +106,7 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        let task_map: Vec<_> = sorted_tasks
+        sorted_tasks
             .into_iter()
             .enumerate()
             .zip(prio_groups)
@@ -130,20 +130,7 @@ impl App {
                     binds: task.binds,
                 }
             })
-            .collect();
-
-        eprintln!("scheduler min prio: {}", edf_pass.min_priority);
-        for t in task_map.iter() {
-            eprintln!(
-                "Task: deadline {} => prio: {}, dispatcher idx: {}, run queue idx: {}, binding: {}",
-                t.deadline_us,
-                t.priority,
-                t.dispatcher_idx,
-                t.rq_idx,
-                t.dispatcher.get_ident().unwrap()
-            );
-        }
-        task_map
+            .collect()
     }
 
     pub(super) fn timestamper_priority(&self) -> u16 {

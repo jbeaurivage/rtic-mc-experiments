@@ -99,9 +99,6 @@ mod app {
                 a = *x;
             });
 
-            // NVIC::pend(Interrupt::SERCOM1_1);
-            // NVIC::pend(Interrupt::TC5);
-
             defmt::info!("Manual task: x = {}", a);
         }
     }
@@ -154,7 +151,7 @@ mod app {
             });
 
             cortex_m::asm::delay(4_000_000);
-            defmt::info!("Long Timer task x = {}", a);
+            defmt::warn!("Long Timer task x = {}", a);
         }
     }
 }

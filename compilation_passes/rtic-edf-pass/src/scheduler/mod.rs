@@ -151,13 +151,16 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
             T::RUN_QUEUE_IDX,
         );
 
-        // It's possible that a task showed up in the queue as the previous task was
+        // It's possible that a task showed up in the queue as the previous (just completed) task was
         // running. So we need to check if it would preempt the next task in line to
         // run, which would start as soon as the critical section exits.
         //
-        // If the next task's dispatcher is currently ready to accept tasks, we can
-        // send it to its own dispatcher. This is how we retrieve items from the
-        // queue.
+        // If the next task's slot in the run queue is currently ready to accept tasks, we can
+        // send it to its own dispatcher. This is how we can empty the wait queue from its non-preempting items.
+        //
+        // This works because all tasks that share a dispatcher run queue slot have the
+        // same deadline, therefore they will never try to preempt each other, but
+        // rather be enqueued.
         let sys_dl = self.system_deadline().get(&cs);
         let next_task = wq.next_task(&cs);
 
