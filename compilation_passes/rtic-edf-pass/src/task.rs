@@ -6,9 +6,15 @@ pub trait EdfTaskBinding {
     /// Dispatcher index associated with this task
     const DISPATCHER_IDX: u16;
 
+    /// The index this task's dispatcher is associated with in the run queue
+    const RUN_QUEUE_IDX: u16;
+
     /// Mask the task's timestamper interrupt, therefore preventing it from
     /// preempting
     fn mask_timestamper_interrupt();
+
+    /// Unpend the task's timestamper interrupt
+    fn unpend_timestamper_interrupt();
 
     /// Unmask the task's timestamper interrupt, therefore allowing it to resume
     /// preempting
@@ -20,16 +26,21 @@ pub trait EdfTaskBinding {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Task {
     rel_deadline: Deadline,
+    /// The index of this task's dispatcher in the list of all available dispatchers
     dispatcher_idx: u16,
+    /// The run queue index of this task's dispatcher
+    rq_idx: u16,
 }
 
 impl Task {
-    pub fn new(rel_deadline: Deadline, dispatcher_idx: u16) -> Self {
+    pub fn new(rel_deadline: Deadline, dispatcher_idx: u16, rq_idx: u16) -> Self {
         Self {
             rel_deadline,
             dispatcher_idx,
+            rq_idx,
         }
     }
 
@@ -41,18 +52,21 @@ impl Task {
         self.rel_deadline = deadline;
     }
 
-    pub(crate) fn into_queued(self, now: Timestamp) -> ScheduledTask {
+    pub(crate) fn into_scheduled(self, now: Timestamp) -> ScheduledTask {
         ScheduledTask {
             deadline: now.wrapping_add(self.rel_deadline),
             dispatcher_idx: self.dispatcher_idx,
+            rq_idx: self.rq_idx,
         }
     }
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct ScheduledTask {
     deadline: Timestamp,
     dispatcher_idx: u16,
+    rq_idx: u16,
 }
 
 impl ScheduledTask {
@@ -60,7 +74,14 @@ impl ScheduledTask {
         self.deadline
     }
 
-    pub fn dispatcher_idx(&self) -> u16 {
+    /// Returns the run queue index associated with this task's dispatcher.
+    pub fn rq_index(&self) -> u16 {
+        self.rq_idx
+    }
+
+    /// Returns the dispatcher's index (ie, which dispatcher to pend when we
+    /// want to start running the task)
+    pub fn dispatcher_index(&self) -> u16 {
         self.dispatcher_idx
     }
 }
@@ -87,18 +108,20 @@ impl Ord for ScheduledTask {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct RunningTask {
     prev_deadline: Timestamp,
-    // TODO: this field is not strictly necessary, only if we want to assert that we haven't missed
-    // a deadline when we start executing the task
+    #[cfg(feature = "check-missed-deadlines")]
     abs_deadline: Timestamp,
 }
 
 impl RunningTask {
-    pub(crate) fn from_scheduled(task: ScheduledTask, prev_deadline: Timestamp) -> Self {
+    pub(crate) fn from_scheduled(_task: ScheduledTask, prev_deadline: Timestamp) -> Self {
         Self {
             prev_deadline,
-            abs_deadline: task.deadline,
+
+            #[cfg(feature = "check-missed-deadlines")]
+            abs_deadline: _task.deadline,
         }
     }
 
@@ -106,6 +129,7 @@ impl RunningTask {
         self.prev_deadline
     }
 
+    #[cfg(feature = "check-missed-deadlines")]
     pub(crate) fn abs_deadline(&self) -> Timestamp {
         self.abs_deadline
     }

@@ -92,6 +92,8 @@ pub unsafe fn lock<T, R>(
     }
 }
 
+/// A critical section implementation that restores the old PRIMASK state when
+/// it is dropped.
 pub struct CsGuard {
     primask: Primask,
 }

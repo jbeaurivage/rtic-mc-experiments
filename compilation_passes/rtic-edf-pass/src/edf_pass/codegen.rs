@@ -77,12 +77,17 @@ impl CodeGen {
             })
             .collect();
 
+        let mut rq_indices: Vec<_> = self.app.tasks.clone();
+        rq_indices.dedup_by_key(|t| t.rq_idx);
+        let run_queue_len = rq_indices.len();
+
         let num_dispatchers = dispatchers.len();
         let queue_len = self.app.app_parameters.queue_len;
         let pac_path = &self.app.app_parameters.pac_path;
 
         parse_quote! {
-            const EDF_QUEUE_LEN: usize = #queue_len;
+            const EDF_WAIT_QUEUE_LEN: usize = #queue_len;
+            const EDF_RUN_QUEUE_LEN: usize = #run_queue_len;
             const NUM_EDF_DISPATCHERS: usize = #num_dispatchers;
 
             // TODO: cortex-m leaking here?
@@ -92,15 +97,15 @@ impl CodeGen {
 
             use ::rtic_edf_pass::scheduler::Scheduler;
             pub struct NvicScheduler {
-               running_queue: ::rtic_edf_pass::scheduler::DispatchQueue<NUM_EDF_DISPATCHERS>,
+               running_queue: ::rtic_edf_pass::scheduler::RunQueue<EDF_RUN_QUEUE_LEN>,
                 min_deadline: ::rtic_edf_pass::scheduler::SystemDeadline,
-                task_queue: ::rtic_edf_pass::scheduler::WaitQueue<EDF_QUEUE_LEN>,
+                task_queue: ::rtic_edf_pass::scheduler::WaitQueue<EDF_WAIT_QUEUE_LEN>,
             }
 
             impl NvicScheduler {
                 pub const fn new() -> Self {
                     Self {
-                       running_queue: ::rtic_edf_pass::scheduler::DispatchQueue::new(),
+                       running_queue: ::rtic_edf_pass::scheduler::RunQueue::new(),
                         min_deadline: ::rtic_edf_pass::scheduler::SystemDeadline::new(),
                         task_queue: ::rtic_edf_pass::scheduler::WaitQueue::new(),
                     }
@@ -108,7 +113,7 @@ impl CodeGen {
             }
 
             // TODO: cortex-m is leaking here
-            impl ::rtic_edf_pass::scheduler::Scheduler<NUM_EDF_DISPATCHERS, EDF_QUEUE_LEN> for NvicScheduler {
+            impl ::rtic_edf_pass::scheduler::Scheduler<EDF_RUN_QUEUE_LEN, EDF_WAIT_QUEUE_LEN> for NvicScheduler {
                 type CS = ::cortex_m_edf_rtic::export::CsGuard;
 
                 #[inline]
@@ -117,7 +122,7 @@ impl CodeGen {
                 }
 
                 #[inline]
-                fn dispatch_queue(&self) -> &::rtic_edf_pass::scheduler::DispatchQueue<NUM_EDF_DISPATCHERS> {
+                fn run_queue(&self) -> &::rtic_edf_pass::scheduler::RunQueue<EDF_RUN_QUEUE_LEN> {
                     &self.running_queue
                 }
 
@@ -127,7 +132,7 @@ impl CodeGen {
                 }
 
                 #[inline]
-                fn wait_queue(&self) -> &::rtic_edf_pass::scheduler::WaitQueue<EDF_QUEUE_LEN> {
+                fn wait_queue(&self) -> &::rtic_edf_pass::scheduler::WaitQueue<EDF_WAIT_QUEUE_LEN> {
                     &self.task_queue
                 }
 
@@ -157,7 +162,7 @@ impl CodeGen {
         for task in self.app.tasks.iter() {
             let dispatcher_prio = task.priority;
             let dispatcher_binding = &task.dispatcher;
-            let dispatcher_idx = task.dispatcher_idx;
+            let rq_idx = task.rq_idx;
             let task_ident = &task.task_struct.ident;
 
             let static_ident = syn::Ident::new(
@@ -183,10 +188,10 @@ impl CodeGen {
                     }
 
                     fn exec(&mut self) {
-                        const DISPATCHER_IDX: u16 = #dispatcher_idx;
+                        const RUN_QUEUE_IDX: u16 = #rq_idx;
 
                         let task_to_run =  unsafe { #static_ident.assume_init_mut() };
-                        let deadline_to_restore = SCHEDULER.dispatcher_entry(DISPATCHER_IDX);
+                        let deadline_to_restore = SCHEDULER.dispatcher_entry(RUN_QUEUE_IDX);
                         task_to_run.exec();
                         SCHEDULER.dispatcher_exit::<#task_ident>(deadline_to_restore);
                     }
@@ -204,6 +209,7 @@ impl EdfTask {
         let task_struct_ident = &self.task_struct.ident;
 
         let dispatcher_idx = self.dispatcher_idx;
+        let rq_idx = self.rq_idx;
         let sched_task_ident = format_ident!("__edf_scheduler_signal_{task_struct_ident}");
         let deadline_us = self.deadline_us;
 
@@ -230,6 +236,7 @@ impl EdfTask {
                         ::rtic_edf_pass::task::Task::new(
                             #deadline_us,
                             <#task_struct_ident as ::rtic_edf_pass::task::EdfTaskBinding>::DISPATCHER_IDX,
+                            <#task_struct_ident as ::rtic_edf_pass::task::EdfTaskBinding>::RUN_QUEUE_IDX,
                         ),
                     );
 
@@ -239,10 +246,16 @@ impl EdfTask {
             // TODO: cortex-m is leaking here
             impl ::rtic_edf_pass::task::EdfTaskBinding for #task_struct_ident {
                 const DISPATCHER_IDX: u16 = #dispatcher_idx;
+                const RUN_QUEUE_IDX: u16 = #rq_idx;
 
                 unsafe fn unmask_timestamper_interrupt() {
                     // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
                     unsafe { ::cortex_m::peripheral::NVIC::unmask(Interrupt::#binds); }
+                }
+
+                fn unpend_timestamper_interrupt() {
+                    // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
+                    ::cortex_m::peripheral::NVIC::unpend(Interrupt::#binds);
                 }
 
                  fn mask_timestamper_interrupt() {

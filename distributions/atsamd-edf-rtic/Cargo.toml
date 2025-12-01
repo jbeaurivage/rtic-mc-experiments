@@ -14,7 +14,6 @@ defmt-rtt = "1.1.0"
 fugit = { version = "0.3.7", features = ["defmt"] }
 heapless = { version = "0.9.1", features = ["defmt", "portable-atomic"] }
 panic-probe = { version = "1.0.0", features = ["defmt", "print-defmt"] }
-#edf-sw = { path = "../../../edf-sw" }
 rtic-edf-pass = { path = "../../compilation_passes/rtic-edf-pass", default-features = false }
 atsamd-hal = { version = "0.23.0", default-features = false }
 rtic-macro = { path = "rtic-macro" }
@@ -31,4 +30,9 @@ debug = 2
 [profile.release]
 opt-level = "s"
 debug = 2
+debug-assertions = false
 lto = "fat"
+
+[profile.debug-optimized]
+inherits= "release"
+debug-assertions = true

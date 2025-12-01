@@ -22,9 +22,15 @@ impl<const N: usize> WaitQueue<N> {
 
     /// Insert a new task into the wait queue
     pub(super) fn push<CS: DroppableCriticalSection>(&self, _cs: &CS, task: ScheduledTask) {
+        #[cfg(not(feature = "unsafe-unchecked-queue"))]
         unsafe { &mut *self.0.get() }
             .push(task)
             .expect("EDF wait queue is full");
+
+        #[cfg(feature = "unsafe-unchecked-queue")]
+        unsafe {
+            (&mut *self.0.get()).push_unchecked(task);
+        }
     }
 
     /// Returns the task with the minimum deadline in the queue, if it exists.

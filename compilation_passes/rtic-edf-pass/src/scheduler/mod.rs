@@ -4,8 +4,8 @@ use crate::{
     types::Timestamp,
 };
 
-mod dispatch_queue;
-pub use dispatch_queue::DispatchQueue;
+mod run_queue;
+pub use run_queue::RunQueue;
 
 mod system_deadline;
 pub use system_deadline::SystemDeadline;
@@ -15,13 +15,13 @@ pub use wait_queue::WaitQueue;
 
 /// EDF scheduler. This trait is implemented at the `rtic-edf-pass` codegen
 /// step.
-pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
+pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized {
     type CS: DroppableCriticalSection;
 
     fn now() -> Timestamp;
     fn pend_dispatcher(idx: u16);
 
-    fn dispatch_queue(&self) -> &DispatchQueue<D_LEN>;
+    fn run_queue(&self) -> &RunQueue<NUM_DISPATCH_PRIOS>;
     fn system_deadline(&self) -> &SystemDeadline;
     fn wait_queue(&self) -> &WaitQueue<Q_LEN>;
 
@@ -30,21 +30,23 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
         let cs = Self::CS::enter();
         let now = Self::now();
 
+        #[cfg(feature = "defmt")]
         let rel_dl = task.rel_deadline();
 
-        let task = task.into_queued(now);
+        let task = task.into_scheduled(now);
 
-        let dispatcher_ready = self.dispatch_queue().is_ready(&cs, task.dispatcher_idx());
+        let dispatcher_ready = self.run_queue().is_ready(&cs, task.rq_index());
         let sys_dl = self.system_deadline().get(&cs);
 
         #[cfg(feature = "defmt")]
         defmt::debug!(
-            "[SCHEDULE] now: {}, rel dl: {}, abs dl: {}, min dl: {}, dispatcher idx: {}, dispatcher ready: {}",
+            "[SCHEDULE] now: {}, rel dl: {}, abs dl: {}, min dl: {}, dispatcher idx: {}, run queue idx: {}, dispatcher ready: {}",
             now,
             rel_dl,
             task.abs_deadline(),
             sys_dl,
-            task.dispatcher_idx(),
+            task.dispatcher_index(),
+            task.rq_index(),
             dispatcher_ready
         );
 
@@ -54,7 +56,6 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
             execute(self, cs, task);
         } else {
             {
-                // let queue = unsafe { &mut *self.wait_queue().get_mut(&cs) };
                 #[cfg(feature = "defmt")]
                 defmt::debug!("[ENQUEUE] queue length: {}", self.wait_queue().len(&cs));
 
@@ -78,19 +79,21 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
     /// 2. Execute its task
     /// 3. dispatcher_exit()
     #[inline]
-    fn dispatcher_entry(&self, dispatcher_idx: u16) -> Timestamp {
+    fn dispatcher_entry(&self, rq_idx: u16) -> Timestamp {
         let cs = Self::CS::enter();
 
         let task_to_run = self
-            .dispatch_queue()
-            .retrieve(&cs, dispatcher_idx)
+            .run_queue()
+            .retrieve(&cs, rq_idx)
             .expect("BUG: a task should be available to run");
 
         let prev_deadline = task_to_run.prev_deadline();
 
-        #[cfg(feature = "defmt")]
+        // Assert that the deadline hasn't been missed
+        #[cfg(all(feature = "defmt", feature = "check-missed-deadlines"))]
         defmt::assert!(Self::now() <= task_to_run.abs_deadline(), "Missed deadline");
-        #[cfg(not(feature = "defmt"))]
+
+        #[cfg(all(not(feature = "defmt"), feature = "check-missed-deadlines"))]
         assert!(Self::now() <= task_to_run.abs_deadline(), "Missed deadline");
 
         prev_deadline
@@ -115,9 +118,24 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
     /// monomorphized.
     #[inline]
     fn dispatcher_exit<T: EdfTaskBinding>(&self, prev_deadline: Timestamp) {
-        // And cleanup after ourselves
         let cs = Self::CS::enter();
-        self.dispatch_queue().complete_task(&cs, T::DISPATCHER_IDX);
+        let rq = self.run_queue();
+        let wq = self.wait_queue();
+
+        rq.mark_complete(&cs, T::RUN_QUEUE_IDX);
+
+        // The timestamper -> scheduler jump means that we will have exited the
+        // timestamper interrupt while the interrupt source is still pending (because
+        // the task itself -ie, the user code- must act upon it to clear the interrupt
+        // flag - think, for example, of a UART that must read its data register to
+        // clear the flag). Therefore the timestamper interrupt will have been
+        // erroneously re-pended as soon as it is exited, which would lead to the task
+        // being scheduled+executed twice if we didn't manually unpend it.
+        T::unpend_timestamper_interrupt();
+
+        // The timestamper interrupt is also masked just before calling `schedule()`.
+        // Currently this call is generated to avoid the `dispatcher_entry` methode
+        // having to take a generic type param to the task binding.(see codegen.rs)
         unsafe {
             T::unmask_timestamper_interrupt();
         }
@@ -127,11 +145,10 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
 
         #[cfg(feature = "defmt")]
         defmt::debug!(
-            // "[COMPLETE TASK] new dl: {}, stack depth: {}",
-            "[COMPLETE TASK] new dl: {}, dispatcher idx: {}",
+            "[COMPLETE TASK] new dl: {}, dispatcher idx: {}, run queue idx: {}",
             prev_deadline,
             T::DISPATCHER_IDX,
-            // stack.len(),
+            T::RUN_QUEUE_IDX,
         );
 
         // It's possible that a task showed up in the queue as the previous task was
@@ -142,15 +159,18 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
         // send it to its own dispatcher. This is how we retrieve items from the
         // queue.
         let sys_dl = self.system_deadline().get(&cs);
-        let next_task = self.wait_queue().next_task(&cs);
+        let next_task = wq.next_task(&cs);
 
         if let Some(task) = next_task
-            && ((task.abs_deadline() < sys_dl)
-                || (self.dispatch_queue().is_ready(&cs, task.dispatcher_idx())))
+            && ((task.abs_deadline() < sys_dl) || (rq.is_ready(&cs, task.rq_index())))
         {
-            let task = unsafe { self.wait_queue().pop_unchecked(&cs) };
+            let task = unsafe { wq.pop_unchecked(&cs) };
             #[cfg(feature = "defmt")]
-            defmt::debug!("[DEQUEUE TASK] dispatcher idx: {}", task.dispatcher_idx());
+            defmt::debug!(
+                "[DEQUEUE TASK] dispatcher idx: {}, run queue idx: {}",
+                T::DISPATCHER_IDX,
+                T::RUN_QUEUE_IDX
+            );
             execute(self, cs, task);
         }
     }
@@ -166,8 +186,8 @@ pub trait Scheduler<const D_LEN: usize, const Q_LEN: usize>: Sized {
 /// 3. Pend the dispatcher interrupt, which will run as soon as there are no
 ///    higher priority interrupts running
 ///
-/// **note**: This function is excluded from the [`Scheduler`] trait in order to
-/// avoid it being callable from within a RTIC app.
+/// **Note**: This function is excluded from the [`Scheduler`] trait in order to
+/// avoid it being callable from within an RTIC app.
 #[inline]
 fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
     scheduler: &S,
@@ -181,21 +201,18 @@ fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
         .system_deadline()
         .replace(&cs, task.abs_deadline());
 
-    let dispatcher_idx = task.dispatcher_idx();
+    let rq_idx = task.rq_index();
+    let dispatcher_idx = task.dispatcher_index();
 
-    scheduler.dispatch_queue().pend_task(
+    scheduler.run_queue().insert_task(
         &cs,
         crate::task::RunningTask::from_scheduled(task, prev_dl),
-        dispatcher_idx,
+        rq_idx,
     );
-    // let max_prio = stack.len() as u8;
 
     #[cfg(feature = "defmt")]
     defmt::debug!(
-        // "[EXEC] max prio: {}, dispatcher prio: {}, now: {}, new dl: {}, prev dl: {}",
-        "[EXEC] dispatcher idx: {}, new dl: {}, prev dl: {}",
-        // max_prio,
-        dispatcher_idx,
+        "[EXEC] new dl: {}, prev dl: {}",
         scheduler.system_deadline().get(&cs),
         prev_dl
     );

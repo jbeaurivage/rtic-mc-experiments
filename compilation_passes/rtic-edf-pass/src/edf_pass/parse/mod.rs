@@ -14,6 +14,10 @@ pub struct EdfTask {
     pub task_struct: ItemStruct,
     /// A task's priority, which is initially expressed as an explicit deadline
     pub priority: u16,
+    /// The run queue index for the task's associated dispatcher. This is
+    /// essentially the dispatcher priority minus an offset, so that it lands in
+    /// the 0..run_queue.len() range
+    pub rq_idx: u16,
     pub dispatcher_idx: u16,
     pub deadline_us: Deadline,
     /// Each task gets assigned its own dispatcher
@@ -108,6 +112,8 @@ impl App {
             .zip(prio_groups)
             .zip(dispatchers)
             .map(|(((dispatcher_idx, task), prio), dispatcher_path)| {
+                // Subtract 1 such that the minimum index is 0
+                let rq_idx = prio - 1;
                 let priority = prio + edf_pass.min_priority;
 
                 EdfTask {
@@ -115,6 +121,7 @@ impl App {
                     attr_idx: task.attr_idx,
                     task_struct: task.task_struct,
                     priority,
+                    rq_idx,
                     dispatcher_idx: dispatcher_idx
                         .try_into()
                         .expect("Unsupported dispatcher priority level: over u16::MAX"),
@@ -128,10 +135,11 @@ impl App {
         eprintln!("scheduler min prio: {}", edf_pass.min_priority);
         for t in task_map.iter() {
             eprintln!(
-                "Task: deadline {} => prio: {:?}, dispatcher idx: {:?}, binding: {}",
+                "Task: deadline {} => prio: {}, dispatcher idx: {}, run queue idx: {}, binding: {}",
                 t.deadline_us,
                 t.priority,
                 t.dispatcher_idx,
+                t.rq_idx,
                 t.dispatcher.get_ident().unwrap()
             );
         }
