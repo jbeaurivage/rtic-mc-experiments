@@ -17,6 +17,7 @@ heapless = { version = "0.9.1", features = ["portable-atomic"] }
 defmt = { version = "1.0", optional = true }
 
 cortex-m = "0.7.7"
+fugit = "0.3.9"
 
 [features]
 std = ["dep:heck", "dep:proc-macro2", "dep:quote", "dep:syn", "dep:rtic-core"]

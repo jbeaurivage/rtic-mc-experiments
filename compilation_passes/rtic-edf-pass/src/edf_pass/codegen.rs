@@ -17,6 +17,8 @@ impl CodeGen {
     }
 
     pub fn run(&mut self) -> ItemMod {
+        self.app.dispatcher_priorities();
+
         let mut tasks: Vec<_> = self
             .app
             .tasks
@@ -24,8 +26,8 @@ impl CodeGen {
             .map(|task| {
                 let task_attribute = &task.params;
                 let task_struct = &mut task.task_struct;
-                // remove the older task attribute and replace with the updated one which
-                // includes an automatically assigned core
+                // Remove the older task attribute and replace with the updated one, which
+                // replaces the deadline parameter with an automatically generated priority
                 task_struct.attrs.remove(task.attr_idx);
                 quote! {
                     #task_attribute
@@ -46,15 +48,12 @@ impl CodeGen {
         let scheduler_dispatcher_bindings = self.generate_dispatcher_bindings();
         tasks.extend(scheduler_dispatcher_bindings);
 
-        // let shared_resources = self.app.shared_resources.iter().map(|s|
-        // &s.shared_struct);
         let ret = parse_quote! {
             #mod_visibility mod #mod_ident {
 
                 #scheduler_impl
 
                 #(#other_code)*
-                // #(#shared_resources)*
                 #(#tasks)*
 
             }
@@ -68,25 +67,23 @@ impl CodeGen {
             .tasks
             .iter()
             .enumerate()
-            .map(|(i, task)| {
+            .inspect(|(i, task)| {
                 assert_eq!(
-                    i, task.dispatcher_idx as usize,
+                    *i, task.dispatcher_idx as usize,
                     "RTIC codegen bug: Tasks vector is not sequentially sorted."
                 );
-                task.dispatcher.get_ident()
             })
+            .map(|(_, task)| task.dispatcher.get_ident())
             .collect();
 
-        let mut rq_indices: Vec<_> = self.app.tasks.clone();
-        rq_indices.dedup_by_key(|t| t.rq_idx);
-        let run_queue_len = rq_indices.len();
-
+        let run_queue_len = self.app.dispatcher_priorities().len();
+        let wait_queue_len = self.app.wait_queue_len();
         let num_dispatchers = dispatchers.len();
-        let queue_len = self.app.app_parameters.queue_len;
+
         let pac_path = &self.app.app_parameters.pac_path;
 
         parse_quote! {
-            const EDF_WAIT_QUEUE_LEN: usize = #queue_len;
+            const EDF_WAIT_QUEUE_LEN: usize = #wait_queue_len;
             const EDF_RUN_QUEUE_LEN: usize = #run_queue_len;
             const NUM_EDF_DISPATCHERS: usize = #num_dispatchers;
 
@@ -147,12 +144,10 @@ impl CodeGen {
     }
 
     fn generate_task_signal_bindings(&self) -> Vec<TokenStream> {
-        let scheduler_priority = self.app.timestamper_priority();
-
         self.app
             .tasks
             .iter()
-            .map(|t| t.generate_timestamper_binding(scheduler_priority))
+            .map(|t| t.generate_timestamper_binding(self.app.timestamper_priority))
             .collect()
     }
 
@@ -160,7 +155,7 @@ impl CodeGen {
         let mut tokens = vec![];
 
         for task in self.app.tasks.iter() {
-            let dispatcher_prio = task.priority;
+            let dispatcher_prio = task.dispatcher_priority;
             let dispatcher_binding = &task.dispatcher;
             let rq_idx = task.rq_idx;
             let task_ident = &task.task_struct.ident;
@@ -205,7 +200,7 @@ impl CodeGen {
 
 impl EdfTask {
     pub fn generate_timestamper_binding(&self, priority: u16) -> TokenStream {
-        let binds = &self.binds;
+        let binds = &self.timestamper_binding;
         let task_struct_ident = &self.task_struct.ident;
 
         let dispatcher_idx = self.dispatcher_idx;

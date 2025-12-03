@@ -37,6 +37,7 @@ pub struct Task {
 }
 
 impl Task {
+    #[inline]
     pub fn new(rel_deadline: Deadline, dispatcher_idx: u16, rq_idx: u16) -> Self {
         Self {
             rel_deadline,
@@ -45,17 +46,23 @@ impl Task {
         }
     }
 
+    #[inline]
     pub fn rel_deadline(&self) -> Deadline {
         self.rel_deadline
     }
 
+    #[inline]
     pub fn set_deadline(&mut self, deadline: Deadline) {
         self.rel_deadline = deadline;
     }
 
+    #[inline]
     pub(crate) fn into_scheduled(self, now: Timestamp) -> ScheduledTask {
+        let (deadline, wrapped) = now.overflowing_add(self.rel_deadline);
+        assert!(!wrapped, "Deadline overflowed");
         ScheduledTask {
-            deadline: now.wrapping_add(self.rel_deadline),
+            // deadline: now.wrapping_add(self.rel_deadline),
+            deadline,
             dispatcher_idx: self.dispatcher_idx,
             rq_idx: self.rq_idx,
         }
@@ -71,17 +78,20 @@ pub(crate) struct ScheduledTask {
 }
 
 impl ScheduledTask {
+    #[inline]
     pub fn abs_deadline(&self) -> Timestamp {
         self.deadline
     }
 
     /// Returns the run queue index associated with this task's dispatcher.
+    #[inline]
     pub fn rq_index(&self) -> u16 {
         self.rq_idx
     }
 
     /// Returns the dispatcher's index (ie, which dispatcher to pend when we
     /// want to start running the task)
+    #[inline]
     pub fn dispatcher_index(&self) -> u16 {
         self.dispatcher_idx
     }
@@ -89,6 +99,7 @@ impl ScheduledTask {
 
 // Tasks are only compared against each other on the basis of their deadline
 impl PartialEq for ScheduledTask {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline
     }
@@ -97,12 +108,14 @@ impl PartialEq for ScheduledTask {
 impl Eq for ScheduledTask {}
 
 impl PartialOrd for ScheduledTask {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for ScheduledTask {
+    #[inline]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.deadline.cmp(&other.deadline)
     }
@@ -110,28 +123,22 @@ impl Ord for ScheduledTask {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub(crate) struct RunningTask {
-    prev_deadline: Timestamp,
-    #[cfg(feature = "check-missed-deadlines")]
-    abs_deadline: Timestamp,
+pub(crate) enum RunningTask {
+    /// If preempted, the task enum contains the previous deadline that it has
+    /// preempted
+    Preempted(Timestamp),
+    /// If it's an early dispatch, the enum contains the task's absolute
+    /// deadline
+    EarlyDispatch(Timestamp),
 }
 
 impl RunningTask {
-    pub(crate) fn from_scheduled(_task: ScheduledTask, prev_deadline: Timestamp) -> Self {
-        Self {
-            prev_deadline,
-
-            #[cfg(feature = "check-missed-deadlines")]
-            abs_deadline: _task.deadline,
-        }
+    #[inline]
+    pub(crate) fn early_dispatch(task: ScheduledTask) -> Self {
+        Self::EarlyDispatch(task.deadline)
     }
 
-    pub(crate) fn prev_deadline(&self) -> Timestamp {
-        self.prev_deadline
-    }
-
-    #[cfg(feature = "check-missed-deadlines")]
-    pub(crate) fn abs_deadline(&self) -> Timestamp {
-        self.abs_deadline
+    pub(crate) fn preempt(previous_dl: Timestamp) -> Self {
+        Self::Preempted(previous_dl)
     }
 }

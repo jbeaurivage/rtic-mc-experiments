@@ -12,6 +12,7 @@ cortex-m = { version = "0.7.7", features = [
 cortex-m-rt = "0.7.5"
 rtic-edf-pass = { path = "../../compilation_passes/rtic-edf-pass", default-features = false }
 rtic-macro = { path = "rtic-macro" }
+benchmark-generator = { path = "benchmark-generator" }
 
 [features]
 unsafe-unchecked-queue = ["rtic-edf-pass/unsafe-unchecked-queue"]

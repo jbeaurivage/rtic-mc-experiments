@@ -98,7 +98,7 @@ pub struct CsGuard {
     primask: Primask,
 }
 
-impl rtic_edf_pass::critical_section::DroppableCriticalSection for CsGuard {
+unsafe impl rtic_edf_pass::critical_section::DroppableCriticalSection for CsGuard {
     fn enter() -> Self {
         let primask = cortex_m::register::primask::read();
         interrupt::disable();

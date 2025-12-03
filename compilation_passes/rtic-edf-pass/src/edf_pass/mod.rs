@@ -33,7 +33,7 @@ impl RticPass for EdfPass {
         self.analyze(&mut parsed);
 
         for task in parsed.tasks.iter_mut() {
-            let priority = task.priority;
+            let priority = task.dispatcher_priority;
             task.params.elements.remove("deadline");
             let expr: syn::Expr = parse_quote! { #priority };
             let _ = task.params.elements.insert("priority".into(), expr);
@@ -50,19 +50,18 @@ impl RticPass for EdfPass {
 
 impl EdfPass {
     fn analyze(&self, app: &mut App) {
-        if app.tasks.len() as u16 > self.max_priority {
-            panic!(
-                "Exceeded number of priorities for this platform ({}), please coerce deadlines manually.",
-                self.max_priority
-            );
-        }
+        // Reserve the highest priority for the timestamper interrupts
+        assert!(
+            *app.dispatcher_priorities().iter().max().unwrap() < self.max_priority,
+            "Exceeded number of priorities for this platform ({}), please coerce deadlines manually.",
+            self.max_priority
+        );
 
-        if app.app_parameters.dispatchers.len() != app.tasks.len() {
-            panic!(
-                "The EDF scheduler needs exactly as many dispatchers as there are tasks ({} tasks, {} dispatchers).",
-                app.tasks.len(),
-                app.app_parameters.dispatchers.len()
-            )
-        }
+        assert!(
+            app.app_parameters.dispatchers.len() >= app.tasks.len(),
+            "The EDF scheduler needs at least as many dispatchers as there are tasks ({} tasks, {} dispatchers).",
+            app.tasks.len(),
+            app.app_parameters.dispatchers.len()
+        )
     }
 }

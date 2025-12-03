@@ -16,8 +16,14 @@ use atsamd_hal::{
     timer::TimerCounter,
 };
 
-#[cortex_m_edf_rtic::app(device = atsamd_hal::pac, dispatchers = [SERCOM0_0, SERCOM0_1, SERCOM0_2], queue_len = 16)]
+#[cortex_m_edf_rtic::app(
+    device = atsamd_hal::pac,
+    dispatchers = [SERCOM0_0, SERCOM0_1, SERCOM0_2],
+    cpu_freq = 120_000_000,
+)]
 mod app {
+    use benchmark_generator::generate_benchmark;
+
     use super::*;
 
     #[shared]
@@ -30,11 +36,6 @@ mod app {
         let mut peripherals = Peripherals::take().unwrap();
         let mut core = CorePeripherals::take().unwrap();
 
-        core.SYST.set_reload(8_000_000 - 1);
-        core.SYST.clear_current();
-        // core.SYST.enable_interrupt();
-        core.SYST.enable_counter();
-
         let mut clocks = GenericClockController::with_external_32kosc(
             peripherals.gclk,
             &mut peripherals.mclk,
@@ -43,8 +44,11 @@ mod app {
             &mut peripherals.nvmctrl,
         );
 
-        // TODO: the clock/system tick should be handled by RTIC itself
-        enable_cyccnt();
+        // TODO: is systick really needed in this example?
+        core.SYST.set_reload(8_000_000 - 1);
+        core.SYST.clear_current();
+        // core.SYST.enable_interrupt();
+        core.SYST.enable_counter();
 
         let timer_clock = clocks.gclk0();
         let tc45 = &clocks.tc4_tc5(&timer_clock).unwrap();
@@ -72,11 +76,13 @@ mod app {
         }
 
         fn exec(&mut self) -> ! {
-            defmt::debug!("Idle");
+            // Manually pend a manual task for fun
             NVIC::pend(Interrupt::SERCOM1_1);
             loop {
-                defmt::trace!("Idle");
-                cortex_m::asm::wfi();
+                core::hint::spin_loop();
+                // WFI would give inaccurate cycle counts when benchmarking
+                // defmt::trace!("Idle");
+                // cortex_m::asm::wfi();
             }
         }
     }
@@ -154,18 +160,4 @@ mod app {
             defmt::warn!("Long Timer task x = {}", a);
         }
     }
-}
-
-/// Enable cycle counter, which acts as our system "timer"
-pub fn enable_cyccnt() {
-    let (mut dwt, dcb) = unsafe {
-        let core = cortex_m::peripheral::Peripherals::steal();
-        (core.DWT, core.DCB)
-    };
-    cortex_m::peripheral::DWT::unlock();
-    unsafe {
-        dcb.demcr.modify(|r| r | (1 << 24));
-    }
-    dwt.set_cycle_count(0);
-    dwt.enable_cycle_counter();
 }

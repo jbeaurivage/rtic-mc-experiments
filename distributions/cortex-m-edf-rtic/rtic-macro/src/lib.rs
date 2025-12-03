@@ -1,21 +1,22 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
-use rtic_auto_assign::AutoAssignPass;
 use rtic_core::{AppArgs, CorePassBackend, RticMacroBuilder, SubAnalysis, SubApp};
-use syn::{parse_quote, ItemFn};
+use syn::{ItemFn, parse_quote};
 extern crate proc_macro;
 use rtic_edf_pass::EdfPass;
 struct AtsamdEdfRtic;
 
+// TODO: this should probably take into account the NVIC prio bits somehow?
 const MIN_TASK_PRIORITY: u16 = 1;
-const MAX_TASK_PRIORITY: u16 = 15;
+const MAX_TASK_PRIORITY: u16 = 8;
+
 #[proc_macro_attribute]
 pub fn app(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut builder = RticMacroBuilder::new(AtsamdEdfRtic);
     let edf_pass = EdfPass::new(MIN_TASK_PRIORITY, MAX_TASK_PRIORITY);
+
     builder.bind_pre_core_pass(edf_pass);
-    builder.bind_pre_core_pass(AutoAssignPass); // run auto-assign first
     builder.build_rtic_macro(args, input)
 }
 
@@ -46,8 +47,22 @@ impl CorePassBackend for AtsamdEdfRtic {
                     #peripheral_crate::NVIC::unmask(#peripheral_crate::Interrupt::#irq_name);
                 }
             });
+
+        let start_dwt_cycle_counter = quote! {
+            let (mut dwt, dcb) =  {
+                let core = cortex_m::peripheral::Peripherals::steal();
+                (core.DWT, core.DCB)
+            };
+
+            cortex_m::peripheral::DWT::unlock();
+            dcb.demcr.modify(|r| r | (1 << 24));
+            dwt.set_cycle_count(0);
+            dwt.enable_cycle_counter();
+        };
+
         Some(quote! {
             unsafe {
+                #start_dwt_cycle_counter
                 #(#initialize_dispatcher_interrupts)*
             }
 

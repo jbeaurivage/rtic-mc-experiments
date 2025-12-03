@@ -1,6 +1,6 @@
 use crate::{
-    critical_section::DroppableCriticalSection,
-    task::{EdfTaskBinding, ScheduledTask, Task},
+    critical_section::{DroppableCriticalSection, NoopCs},
+    task::{EdfTaskBinding, RunningTask, ScheduledTask, Task},
     types::Timestamp,
 };
 
@@ -27,7 +27,9 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
 
     /// Signal to the scheduler that a task wants to run.
     fn schedule(&self, task: Task) {
-        let cs = Self::CS::enter();
+        // SAFETY: This is only valid when we are sure that this function runs at the
+        // maximum (most urgent) system priority, and thus cannot be preempted.
+        let cs = NoopCs::enter();
         let now = Self::now();
 
         #[cfg(feature = "defmt")]
@@ -40,20 +42,33 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
 
         #[cfg(feature = "defmt")]
         defmt::debug!(
-            "[SCHEDULE] now: {}, rel dl: {}, abs dl: {}, min dl: {}, dispatcher idx: {}, run queue idx: {}, dispatcher ready: {}",
+            "[SCHEDULE] now: {}, rel dl: {}, abs dl: {}, sys dl: {}, dispatcher idx: {}, run queue idx: {}, dispatcher ready: {}, abs_dl < sys_dl : {}",
             now,
             rel_dl,
             task.abs_deadline(),
             sys_dl,
             task.dispatcher_index(),
             task.rq_index(),
-            dispatcher_ready
+            dispatcher_ready,
+            task.abs_deadline() < sys_dl,
         );
 
+        // We can bypass the queue once per dispatcher priority level (even if the
+        // task's deadline is farther in the future than the system deadline), by
+        // directly pending the task in its dispatcher if the slot is empty. The
+        // scheduling will then happen according to the NVIC's priority
+        // configurations, which is what we want (ie, a tiny bit of hardware
+        // acceleration to the rescue).
+        //
+        // This only works because every priority level only has one unique relative
+        // deadline, such that no task can ever preempt another with the same deadline
         if task.abs_deadline() < sys_dl || dispatcher_ready {
+            let preempt = task.abs_deadline() < sys_dl;
+
             #[cfg(feature = "defmt")]
-            defmt::debug!("[PREEMPT]");
-            execute(self, cs, task);
+            defmt::debug!("[DIRECT EXECUTE] preempt: {}", preempt);
+
+            execute(self, cs, task, preempt);
         } else {
             {
                 #[cfg(feature = "defmt")]
@@ -80,6 +95,8 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
     /// 3. dispatcher_exit()
     #[inline]
     fn dispatcher_entry(&self, rq_idx: u16) -> Timestamp {
+        // The dispatcher runs at its own priority (lower than the timestamper prio).
+        // Therefore we need a "real" critical section here.
         let cs = Self::CS::enter();
 
         let task_to_run = self
@@ -87,16 +104,30 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
             .retrieve(&cs, rq_idx)
             .expect("BUG: a task should be available to run");
 
-        let prev_deadline = task_to_run.prev_deadline();
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "[DISPATCHER ENTRY] sys dl: {}, task: {}",
+            self.system_deadline().get(&cs),
+            task_to_run
+        );
 
-        // Assert that the deadline hasn't been missed
+        let (prev_deadline, _abs_dl) = match task_to_run {
+            RunningTask::Preempted(previous_dl) => (*previous_dl, self.system_deadline().get(&cs)),
+            RunningTask::EarlyDispatch(abs_dl) => {
+                (self.system_deadline().replace(&cs, *abs_dl), *abs_dl)
+            }
+        };
+
+        // Optionally assert that the deadline hasn't been missed
         #[cfg(all(feature = "defmt", feature = "check-missed-deadlines"))]
-        defmt::assert!(Self::now() <= task_to_run.abs_deadline(), "Missed deadline");
+        defmt::assert!(Self::now() <= _abs_dl, "Missed deadline");
 
         #[cfg(all(not(feature = "defmt"), feature = "check-missed-deadlines"))]
-        assert!(Self::now() <= task_to_run.abs_deadline(), "Missed deadline");
+        assert!(Self::now() <= _abs_dl, "Missed deadline");
 
         prev_deadline
+
+        // critical section is dropped here, therefore reenabling interrupts
     }
 
     /// Dispatcher exit
@@ -118,11 +149,21 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
     /// monomorphized.
     #[inline]
     fn dispatcher_exit<T: EdfTaskBinding>(&self, prev_deadline: Timestamp) {
+        // The dispatcher runs at its own priority (lower than the timestamper prio).
+        // Therefore we need a "real" critical section here.
         let cs = Self::CS::enter();
         let rq = self.run_queue();
         let wq = self.wait_queue();
 
         rq.mark_complete(&cs, T::RUN_QUEUE_IDX);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "[COMPLETE TASK] new dl: {}, dispatcher idx: {}, run queue idx: {}",
+            prev_deadline,
+            T::DISPATCHER_IDX,
+            T::RUN_QUEUE_IDX,
+        );
 
         // The timestamper -> scheduler jump means that we will have exited the
         // timestamper interrupt while the interrupt source is still pending (because
@@ -134,8 +175,8 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
         T::unpend_timestamper_interrupt();
 
         // The timestamper interrupt is also masked just before calling `schedule()`.
-        // Currently this call is generated to avoid the `dispatcher_entry` methode
-        // having to take a generic type param to the task binding.(see codegen.rs)
+        // Currently this call is generated to avoid the `dispatcher_entry` method
+        // having to take a generic type param to the task binding (see codegen.rs).
         unsafe {
             T::unmask_timestamper_interrupt();
         }
@@ -143,39 +184,43 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
         // Restore previous deadline
         let _ = self.system_deadline().replace(&cs, prev_deadline);
 
-        #[cfg(feature = "defmt")]
-        defmt::debug!(
-            "[COMPLETE TASK] new dl: {}, dispatcher idx: {}, run queue idx: {}",
-            prev_deadline,
-            T::DISPATCHER_IDX,
-            T::RUN_QUEUE_IDX,
-        );
-
-        // It's possible that a task showed up in the queue as the previous (just completed) task was
-        // running. So we need to check if it would preempt the next task in line to
-        // run, which would start as soon as the critical section exits.
+        // It's possible that a task showed up in the queue as the previous (just
+        // completed) task was running. So we need to check if it would preempt
+        // the next task in line to run, which would start as soon as the
+        // critical section exits.
         //
-        // If the next task's slot in the run queue is currently ready to accept tasks, we can
-        // send it to its own dispatcher. This is how we can empty the wait queue from its non-preempting items.
+        // If the next task's slot in the run queue is currently ready to accept tasks,
+        // we can send it to its own dispatcher. This is how we can empty the
+        // wait queue from its non-preempting items.
         //
         // This works because all tasks that share a dispatcher run queue slot have the
         // same deadline, therefore they will never try to preempt each other, but
-        // rather be enqueued.
+        // rather be enqueued. Therefore if the run queue's slot is already full for
+        // this priority level, it is guaranteed to have a shorter deadline than any
+        // dequeued task on the same prio level.
         let sys_dl = self.system_deadline().get(&cs);
         let next_task = wq.next_task(&cs);
 
         if let Some(task) = next_task
-            && ((task.abs_deadline() < sys_dl) || (rq.is_ready(&cs, task.rq_index())))
+            && (task.abs_deadline() < sys_dl)
+            && (rq.is_ready(&cs, task.rq_index()))
         {
+            let preempt = task.abs_deadline() < sys_dl;
             let task = unsafe { wq.pop_unchecked(&cs) };
             #[cfg(feature = "defmt")]
             defmt::debug!(
-                "[DEQUEUE TASK] dispatcher idx: {}, run queue idx: {}",
-                T::DISPATCHER_IDX,
-                T::RUN_QUEUE_IDX
+                "[DEQUEUE TASK] now: {}, sys dl: {}, preempt: {}, task dispatcher: {}, task run queue idx: {}, task dl: {}",
+                Self::now(),
+                sys_dl,
+                preempt,
+                task.dispatcher_index(),
+                task.rq_index(),
+                task.abs_deadline(),
             );
-            execute(self, cs, task);
+            execute(self, cs, task, preempt);
         }
+
+        // critical section is dropped here, therefore reenabling interrupts
     }
 }
 
@@ -196,29 +241,42 @@ fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
     scheduler: &S,
     cs: CS,
     task: ScheduledTask,
+    preempt: bool,
 ) where
-    S: Scheduler<D_LEN, Q_LEN, CS = CS>,
+    S: Scheduler<D_LEN, Q_LEN>,
     CS: DroppableCriticalSection,
 {
-    let prev_dl = scheduler
-        .system_deadline()
-        .replace(&cs, task.abs_deadline());
-
     let rq_idx = task.rq_index();
     let dispatcher_idx = task.dispatcher_index();
 
-    scheduler.run_queue().insert_task(
-        &cs,
-        crate::task::RunningTask::from_scheduled(task, prev_dl),
-        rq_idx,
-    );
+    if preempt {
+        let prev_dl = scheduler
+            .system_deadline()
+            .replace(&cs, task.abs_deadline());
 
-    #[cfg(feature = "defmt")]
-    defmt::debug!(
-        "[EXEC] new dl: {}, prev dl: {}",
-        scheduler.system_deadline().get(&cs),
-        prev_dl
-    );
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "[EXEC preempt] new dl: {}, prev dl: {}",
+            scheduler.system_deadline().get(&cs),
+            prev_dl
+        );
+
+        scheduler
+            .run_queue()
+            .insert_task(&cs, RunningTask::preempt(prev_dl), rq_idx);
+    } else {
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "[EXEC early dispatch] sys dl: {}, abs dl: {}",
+            scheduler.system_deadline().get(&cs),
+            task.abs_deadline(),
+        );
+        scheduler
+            .run_queue()
+            .insert_task(&cs, RunningTask::early_dispatch(task), rq_idx);
+    }
 
     S::pend_dispatcher(dispatcher_idx);
+
+    // critical section is dropped here, therefore reenabling interrupts
 }

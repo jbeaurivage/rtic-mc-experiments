@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{EdfPass, edf_pass::parse::ast::AppParameters, types::Deadline};
 
 use super::parse::ast::TaskStructDef;
@@ -13,7 +15,7 @@ pub struct EdfTask {
     pub attr_idx: usize,
     pub task_struct: ItemStruct,
     /// A task's priority, which is initially expressed as an explicit deadline
-    pub priority: u16,
+    pub dispatcher_priority: u16,
     /// The run queue index for the task's associated dispatcher. This is
     /// essentially the dispatcher priority minus an offset, so that it lands in
     /// the 0..run_queue.len() range
@@ -22,8 +24,8 @@ pub struct EdfTask {
     pub deadline_us: Deadline,
     /// Each task gets assigned its own dispatcher
     pub dispatcher: Path,
-    /// Interrupt handler signalling task arrival
-    pub binds: Path,
+    /// Interrupt handler signalling task arrival (aka timestamper)
+    pub timestamper_binding: Path,
 }
 
 /// Type to represent an RTIC application for deadline to priority conversion
@@ -33,6 +35,7 @@ pub struct App {
     pub app_parameters: AppParameters,
     pub tasks: Vec<EdfTask>,
     pub rest_of_code: Vec<Item>,
+    pub timestamper_priority: u16,
 }
 
 impl App {
@@ -76,7 +79,25 @@ impl App {
             app_parameters,
             tasks,
             rest_of_code,
+            timestamper_priority: edf_pass.max_priority,
         })
+    }
+
+    /// Returns the set of unique dispatcher priorities in the system
+    pub fn dispatcher_priorities(&self) -> HashSet<u16> {
+        self.tasks.iter().map(|t| t.dispatcher_priority).collect()
+    }
+
+    /// Returns the length of the generated wait queue.
+    ///
+    /// (wait queue length) = (number of tasks in the system) - (number of
+    /// unique priorities)
+    ///
+    /// This works because for each priority level, we can bypass the queue one
+    /// time before having the enqueue an arriving task, by pending the task
+    /// directly in its dispatcher.
+    pub fn wait_queue_len(&self) -> usize {
+        self.tasks.len() - self.dispatcher_priorities().len()
     }
 
     fn assign_dispatchers_and_priorities(
@@ -120,28 +141,17 @@ impl App {
                     params: task.params,
                     attr_idx: task.attr_idx,
                     task_struct: task.task_struct,
-                    priority,
+                    dispatcher_priority: priority,
                     rq_idx,
                     dispatcher_idx: dispatcher_idx
                         .try_into()
                         .expect("Unsupported dispatcher priority level: over u16::MAX"),
                     dispatcher: dispatcher_path.clone(),
                     deadline_us: task.deadline_us,
-                    binds: task.binds,
+                    timestamper_binding: task.binds,
                 }
             })
             .collect()
-    }
-
-    pub(super) fn timestamper_priority(&self) -> u16 {
-        self.tasks
-            .iter()
-            .map(|t| t.priority)
-            .max()
-            .map(|p| p + 1)
-            // Technically this "1" priority is irrelevant if we have no
-            // EDF tasks, as no signaller binding will be generated.
-            .unwrap_or(1)
     }
 }
 

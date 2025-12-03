@@ -6,7 +6,7 @@ use crate::types::Deadline;
 pub struct AppParameters {
     pub dispatchers: Vec<Path>,
     pub pac_path: Path,
-    pub queue_len: Option<usize>,
+    pub cpu_freq: u32,
 }
 
 impl AppParameters {
@@ -29,19 +29,22 @@ impl AppParameters {
             panic!("`device` must be a valid path to a PAC crate")
         };
 
-        let queue_len = if let Some(Expr::Lit(syn::ExprLit {
+        let cpu_freq = if let Some(Expr::Lit(syn::ExprLit {
             lit: Lit::Int(int), ..
-        })) = args.elements.get("queue_len")
+        })) = args.elements.get("cpu_freq")
         {
             int.base10_parse().ok()
         } else {
-            panic!("`queue_len` must be a integer literal");
-        };
+            panic!("`cpu_freq` must be a integer literal representing the CPU frequency in Hertz");
+        }
+        .unwrap_or_else(|| {
+            panic!("`cpu_freq` must be a integer literal representing the CPU frequency in Hertz")
+        });
 
         Ok(Self {
             dispatchers: dispatcher_vec,
             pac_path: pac_path.path.clone(),
-            queue_len,
+            cpu_freq,
         })
     }
 }
