@@ -11,7 +11,11 @@ benchmark_generator::generate_benchmark_app!(
     1,
     // Deadline timings. Should be stritcly ordered and contain no duplicates.
     [
-        60_000_000, 50_000_000, 40_000_000, 30_000_000, 20_000_000,
-        10_000_000 // 10_000_000, 20_000_000, 30_000_000, 40_000_000, 50_000_000, 60_000_000
+        // Switch between these two orderings in order to get the worst case overhead.
+
+        // 60_000_000, 50_000_000, 40_000_000, 30_000_000, 20_000_000, 10_000_000
+        10_000_000, 20_000_000, 30_000_000, 40_000_000, 50_000_000, 60_000_000
     ]
 );
+
+// cmd: DEFMT_LOG=debug cargo r --profile release --example bench_oh -F rtic-edf-pass/benchmark

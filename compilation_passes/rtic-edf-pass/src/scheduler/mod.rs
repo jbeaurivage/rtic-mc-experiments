@@ -16,6 +16,9 @@ pub use wait_queue::WaitQueue;
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
 
+#[cfg(feature = "benchmark")]
+pub mod reverse_pend_chain;
+
 /// EDF scheduler. This trait is implemented at the `rtic-edf-pass` codegen
 /// step.
 pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized {
@@ -78,6 +81,11 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
                 defmt::trace!("[ENQUEUE] queue length: {}", self.wait_queue().len(&cs));
 
                 self.wait_queue().push(&cs, task);
+                #[cfg(feature = "benchmark")]
+                {
+                    benchmark::print_trace();
+                    let cs = defmt::debug!("Queue len: {}", self.wait_queue().len(&cs) - 1);
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use syn::parse_quote;
 
-use crate::{handlers::Task, Handler, Settings};
+use crate::{Handler, Settings, handlers::Task};
 
 pub(crate) fn generate_app(handlers: Vec<Handler>, app_settings: Settings) -> TokenStream2 {
     let mut task_tokens = vec![];
@@ -61,9 +61,13 @@ pub(crate) fn generate_app(handlers: Vec<Handler>, app_settings: Settings) -> To
         let pend_timestamper: TokenStream2 = parse_quote! {
             ::cortex_m::peripheral::NVIC::pend(crate::app::Interrupt::#timestamper);
         };
-
-        pend_chain.push(pend_timestamper);
     }
+
+    let highest_irq_timestamper = &tasks_dl.last().unwrap().handler.ident;
+    let highest_irq_timestamper: TokenStream2 = parse_quote! {
+        ::cortex_m::peripheral::NVIC::pend(crate::app::Interrupt::#highest_irq_timestamper);
+    };
+    pend_chain.push(highest_irq_timestamper);
 
     let dispatcher_handlers = dispatcher_handlers.iter().map(|h| {
         let ident = &h.ident;
@@ -87,6 +91,7 @@ pub(crate) fn generate_app(handlers: Vec<Handler>, app_settings: Settings) -> To
                 prelude::InterruptDrivenTimer,
                 timer::TimerCounter,
             };
+            use cortex_m::interrupt::InterruptNumber;
 
             #[shared]
             struct Shared {

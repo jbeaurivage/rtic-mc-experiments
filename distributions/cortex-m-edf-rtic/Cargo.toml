@@ -45,12 +45,3 @@ debug-assertions = true
 [[example]]
 name = "benchmark"
 required-features = ["check-missed-deadlines"]
-
-[[example]]
-name = "overhead_bench"
-required-features = ["rtic-edf-pass/defmt"]
-
-[[example]]
-name = "bench_oh"
-# required-features = ["rtic-edf-pass/defmt", "check-missed-deadlines"]
-required-features = ["rtic-edf-pass/defmt"]

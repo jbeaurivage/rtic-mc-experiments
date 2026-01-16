@@ -9,6 +9,7 @@ benchmark_generator::generate_benchmark_app!(
     9,
     // Number of busy-delay cycles (Will be replaced with 1 if set to 0 here)
     1,
+<<<<<<< HEAD
     // Deadline timings. Should be stritcly ordered and contain no duplicates.
     [11_179, 14_277, 17_426, 20_292, 22_965, 25_034]
 );
@@ -16,6 +17,16 @@ benchmark_generator::generate_benchmark_app!(
 // -------------------------------- RESULTS -----------------------------------------
 // cmd: DEFMT_LOG=info cargo r --release --example benchmark -F check-missed-deadlines,rtic-edf-pass/defmt
 // profile: opt-level = "s", lto = "fat"
+||||||| parent of 16fba81 (A nice benchmarking framework with first results)
+benchmark_generator::generate_benchmark_app!(3, 140_000);
+=======
+    // Deadline timings. Should be stritcly ordered and contain no duplicates
+    [11_179, 14_277, 17_426, 20_292, 22_965, 25_034]
+);
+
+// -------------------------------- RESULTS -----------------------------------------
+// cmd: DEFMT_LOG=info cargo r --release --example benchmark -F check-missed-deadlines,rtic-edf-pass/defmt
+>>>>>>> 16fba81 (A nice benchmarking framework with first results)
 //
 // Prio:              6           5           4           3           2           1
 // Max queue len:     48          40          32          24          16          8
