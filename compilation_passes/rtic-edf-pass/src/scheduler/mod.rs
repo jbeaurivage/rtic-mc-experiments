@@ -101,7 +101,7 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
 
         let task_to_run = self
             .run_queue()
-            .retrieve(&cs, rq_idx)
+            .peek(&cs, rq_idx)
             .expect("BUG: a task should be available to run");
 
         #[cfg(feature = "defmt")]
@@ -120,7 +120,29 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
 
         // Optionally assert that the deadline hasn't been missed
         #[cfg(all(feature = "defmt", feature = "check-missed-deadlines"))]
-        defmt::assert!(Self::now() <= _abs_dl, "Missed deadline");
+        {
+            // TODO: cortex-m leaking here
+            use cortex_m::peripheral::scb::VectActive;
+
+            let now = Self::now();
+
+            let vect_active = cortex_m::peripheral::SCB::vect_active();
+            let irqn = match vect_active {
+                VectActive::Interrupt { irqn } => Some(irqn),
+                _ => None,
+            };
+
+            defmt::assert!(
+                now <= _abs_dl,
+                "Missed deadline. \n\tnow: {}\n\tDeadline: {}\n\tdiff: {}\n\tQueue len: {}\n\tRun queue idx: {}\n\tISR: {}",
+                now,
+                _abs_dl,
+                now - _abs_dl,
+                self.wait_queue().len(&cs),
+                rq_idx,
+                irqn,
+            );
+        }
 
         #[cfg(all(not(feature = "defmt"), feature = "check-missed-deadlines"))]
         assert!(Self::now() <= _abs_dl, "Missed deadline");
@@ -263,7 +285,7 @@ fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
 
         scheduler
             .run_queue()
-            .insert_task(&cs, RunningTask::preempt(prev_dl), rq_idx);
+            .insert(&cs, RunningTask::preempt(prev_dl), rq_idx);
     } else {
         #[cfg(feature = "defmt")]
         defmt::debug!(
@@ -273,7 +295,7 @@ fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
         );
         scheduler
             .run_queue()
-            .insert_task(&cs, RunningTask::early_dispatch(task), rq_idx);
+            .insert(&cs, RunningTask::early_dispatch(task), rq_idx);
     }
 
     S::pend_dispatcher(dispatcher_idx);

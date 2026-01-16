@@ -5,7 +5,7 @@ use super::parse::App;
 use heck::ToSnakeCase;
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{ItemMod, parse_quote};
+use syn::{parse_quote, ItemMod};
 
 pub struct CodeGen {
     app: App,
@@ -100,6 +100,7 @@ impl CodeGen {
             }
 
             impl NvicScheduler {
+                #[inline]
                 pub const fn new() -> Self {
                     Self {
                        running_queue: ::rtic_edf_pass::scheduler::RunQueue::new(),
@@ -238,16 +239,19 @@ impl EdfTask {
                 const DISPATCHER_IDX: u16 = #dispatcher_idx;
                 const RUN_QUEUE_IDX: u16 = #rq_idx;
 
+                #[inline]
                 unsafe fn unmask_timestamper_interrupt() {
                     // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
                     unsafe { ::cortex_m::peripheral::NVIC::unmask(Interrupt::#binds); }
                 }
 
+                #[inline]
                 fn unpend_timestamper_interrupt() {
                     // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
                     ::cortex_m::peripheral::NVIC::unpend(Interrupt::#binds);
                 }
 
+                #[inline]
                  fn mask_timestamper_interrupt() {
                     // TODO this is sort of sketchy, we should somehow get the right path to the interrupt enum variant
                     ::cortex_m::peripheral::NVIC::mask(Interrupt::#binds);

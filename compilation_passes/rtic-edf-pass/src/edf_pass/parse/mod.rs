@@ -127,7 +127,7 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        sorted_tasks
+        let tasks = sorted_tasks
             .into_iter()
             .enumerate()
             .zip(prio_groups)
@@ -151,7 +151,18 @@ impl App {
                     timestamper_binding: task.binds,
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        for t in tasks.iter() {
+            eprintln!(
+                "Task:\n\tdeadline: {}\n\ttimestamper: {}\n\tdispatcher: {}",
+                t.deadline_us,
+                t.timestamper_binding.get_ident().unwrap(),
+                t.dispatcher.get_ident().unwrap(),
+            );
+        }
+
+        tasks
     }
 }
 

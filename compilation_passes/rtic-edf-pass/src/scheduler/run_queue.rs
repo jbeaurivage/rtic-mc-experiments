@@ -30,7 +30,7 @@ impl<const N: usize> RunQueue<N> {
     }
 
     /// Insert a pending task to the queue for later retrieval
-    pub(super) fn insert_task<CS: DroppableCriticalSection>(
+    pub(super) fn insert<CS: DroppableCriticalSection>(
         &self,
         cs: &CS,
         task: RunningTask,
@@ -42,8 +42,8 @@ impl<const N: usize> RunQueue<N> {
         slot.replace(task);
     }
 
-    /// Retrieve the task to run, without marking the slot as ready
-    pub(super) fn retrieve<'a, 'cs: 'a, CS: DroppableCriticalSection>(
+    /// Peek at the task to run, without marking the slot as ready
+    pub(super) fn peek<'a, 'cs: 'a, CS: DroppableCriticalSection>(
         &self,
         cs: &'cs CS,
         idx: u16,

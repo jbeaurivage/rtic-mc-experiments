@@ -42,3 +42,7 @@ lto = "fat"
 [profile.debug-optimized]
 inherits = "release"
 debug-assertions = true
+
+[[example]]
+name = "benchmark"
+required-features = ["check-missed-deadlines"]
