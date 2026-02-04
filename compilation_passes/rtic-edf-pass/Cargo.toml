@@ -26,5 +26,5 @@ default = ["std"]
 
 multibin = ["rtic-core/multibin"]
 defmt = ["dep:defmt"]
-unsafe-unchecked-queue = []
+benchmark = ["defmt"]
 check-missed-deadlines = []

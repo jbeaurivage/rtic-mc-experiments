@@ -9,12 +9,13 @@ benchmark_generator::generate_benchmark_app!(
     9,
     // Number of busy-delay cycles (Will be replaced with 1 if set to 0 here)
     1,
-    // Deadline timings. Should be stritcly ordered and contain no duplicates
+    // Deadline timings. Should be stritcly ordered and contain no duplicates.
     [11_179, 14_277, 17_426, 20_292, 22_965, 25_034]
 );
 
 // -------------------------------- RESULTS -----------------------------------------
 // cmd: DEFMT_LOG=info cargo r --release --example benchmark -F check-missed-deadlines,rtic-edf-pass/defmt
+// profile: opt-level = "s", lto = "fat"
 //
 // Prio:              6           5           4           3           2           1
 // Max queue len:     48          40          32          24          16          8

@@ -15,7 +15,6 @@ rtic-macro = { path = "rtic-macro" }
 benchmark-generator = { path = "benchmark-generator" }
 
 [features]
-unsafe-unchecked-queue = ["rtic-edf-pass/unsafe-unchecked-queue"]
 check-missed-deadlines = ["rtic-edf-pass/check-missed-deadlines"]
 
 [dev-dependencies]
@@ -34,7 +33,7 @@ opt-level = 0
 debug = 2
 
 [profile.release]
-opt-level = "s"
+opt-level = 3
 debug = 2
 debug-assertions = false
 lto = "fat"
@@ -46,3 +45,12 @@ debug-assertions = true
 [[example]]
 name = "benchmark"
 required-features = ["check-missed-deadlines"]
+
+[[example]]
+name = "overhead_bench"
+required-features = ["rtic-edf-pass/defmt"]
+
+[[example]]
+name = "bench_oh"
+# required-features = ["rtic-edf-pass/defmt", "check-missed-deadlines"]
+required-features = ["rtic-edf-pass/defmt"]

@@ -13,6 +13,9 @@ pub use system_deadline::SystemDeadline;
 mod wait_queue;
 pub use wait_queue::WaitQueue;
 
+#[cfg(feature = "benchmark")]
+pub mod benchmark;
+
 /// EDF scheduler. This trait is implemented at the `rtic-edf-pass` codegen
 /// step.
 pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized {
@@ -41,7 +44,7 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
         let sys_dl = self.system_deadline().get(&cs);
 
         #[cfg(feature = "defmt")]
-        defmt::debug!(
+        defmt::trace!(
             "[SCHEDULE] now: {}, rel dl: {}, abs dl: {}, sys dl: {}, dispatcher idx: {}, run queue idx: {}, dispatcher ready: {}, abs_dl < sys_dl : {}",
             now,
             rel_dl,
@@ -66,13 +69,13 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
             let preempt = task.abs_deadline() < sys_dl;
 
             #[cfg(feature = "defmt")]
-            defmt::debug!("[DIRECT EXECUTE] preempt: {}", preempt);
+            defmt::trace!("[DIRECT EXECUTE] preempt: {}", preempt);
 
             execute(self, cs, task, preempt);
         } else {
             {
                 #[cfg(feature = "defmt")]
-                defmt::debug!("[ENQUEUE] queue length: {}", self.wait_queue().len(&cs));
+                defmt::trace!("[ENQUEUE] queue length: {}", self.wait_queue().len(&cs));
 
                 self.wait_queue().push(&cs, task);
             }
@@ -105,7 +108,7 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
             .expect("BUG: a task should be available to run");
 
         #[cfg(feature = "defmt")]
-        defmt::debug!(
+        defmt::trace!(
             "[DISPATCHER ENTRY] sys dl: {}, task: {}",
             self.system_deadline().get(&cs),
             task_to_run
@@ -180,7 +183,7 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
         rq.mark_complete(&cs, T::RUN_QUEUE_IDX);
 
         #[cfg(feature = "defmt")]
-        defmt::debug!(
+        defmt::trace!(
             "[COMPLETE TASK] new dl: {}, dispatcher idx: {}, run queue idx: {}",
             prev_deadline,
             T::DISPATCHER_IDX,
@@ -230,7 +233,7 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
             let preempt = task.abs_deadline() < sys_dl;
             let task = unsafe { wq.pop_unchecked(&cs) };
             #[cfg(feature = "defmt")]
-            defmt::debug!(
+            defmt::trace!(
                 "[DEQUEUE TASK] now: {}, sys dl: {}, preempt: {}, task dispatcher: {}, task run queue idx: {}, task dl: {}",
                 Self::now(),
                 sys_dl,
@@ -239,6 +242,7 @@ pub trait Scheduler<const NUM_DISPATCH_PRIOS: usize, const Q_LEN: usize>: Sized 
                 task.rq_index(),
                 task.abs_deadline(),
             );
+
             execute(self, cs, task, preempt);
         }
 
@@ -277,7 +281,7 @@ fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
             .replace(&cs, task.abs_deadline());
 
         #[cfg(feature = "defmt")]
-        defmt::debug!(
+        defmt::trace!(
             "[EXEC preempt] new dl: {}, prev dl: {}",
             scheduler.system_deadline().get(&cs),
             prev_dl
@@ -288,7 +292,7 @@ fn execute<S, CS, const D_LEN: usize, const Q_LEN: usize>(
             .insert(&cs, RunningTask::preempt(prev_dl), rq_idx);
     } else {
         #[cfg(feature = "defmt")]
-        defmt::debug!(
+        defmt::trace!(
             "[EXEC early dispatch] sys dl: {}, abs dl: {}",
             scheduler.system_deadline().get(&cs),
             task.abs_deadline(),

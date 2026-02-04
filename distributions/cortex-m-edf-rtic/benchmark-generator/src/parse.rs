@@ -47,7 +47,9 @@ impl TryFrom<Args> for Settings {
             .map(|lit| lit.base10_parse::<u32>())
             .collect::<Result<Vec<_>, _>>()?;
 
-        if !deadline_timings.windows(2).all(|w| w[0] < w[1]) {
+        if !(deadline_timings.windows(2).all(|w| w[0] < w[1])
+            || deadline_timings.windows(2).all(|w| w[0] > w[1]))
+        {
             return Err(
                 "deadline_timings must be strictly ordered and contain no duplicates".into(),
             );

@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use syn::parse_quote;
 
-use crate::{Handler, Settings, handlers::Task};
+use crate::{handlers::Task, Handler, Settings};
 
 pub(crate) fn generate_app(handlers: Vec<Handler>, app_settings: Settings) -> TokenStream2 {
     let mut task_tokens = vec![];

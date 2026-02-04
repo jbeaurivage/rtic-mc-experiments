@@ -8,6 +8,7 @@ pub(crate) struct Handler {
     pub ident: Ident,
 }
 
+#[derive(Debug)]
 pub(crate) struct Task {
     pub deadline: u32,
     pub handler: Handler,
